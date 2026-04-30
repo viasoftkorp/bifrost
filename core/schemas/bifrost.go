@@ -297,7 +297,6 @@ const (
 	IsAPIKeyAuthContextKey                               BifrostContextKey = "is_api_key_auth"
 	IsLocalAdminContextKey                               BifrostContextKey = "is_local_admin"                // bool (set by auth middleware when password-based auth succeeds - local admin user bypasses RBAC)
 	BifrostContextKeyPassthroughOverridesPresent         BifrostContextKey = "passthrough_overrides_present" // bool (set by HTTP transport) - passthrough raw request requested
-
 )
 
 const (
@@ -1243,6 +1242,10 @@ type BifrostCacheDebug struct {
 	// Semantic cache only (only when cache is hit)
 	Threshold  *float64 `json:"threshold,omitempty"`
 	Similarity *float64 `json:"similarity,omitempty"`
+
+	// CacheHitLatency is the time in milliseconds spent serving the cache hit
+	// (lookup + response build). Only set when CacheHit is true.
+	CacheHitLatency *int64 `json:"cache_hit_latency,omitempty"`
 }
 
 const (
