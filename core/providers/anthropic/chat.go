@@ -259,7 +259,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		return nil, fmt.Errorf("bifrost request is nil or input is nil")
 	}
 
+	// Anthropic rejects requests where the last message role is assistant.
 	messages := bifrostReq.Input
+	trimmed := len(messages)
+	for trimmed > 0 && messages[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
+		trimmed--
+	}
+	messages = messages[:trimmed]
+
 	anthropicReq := &AnthropicMessageRequest{
 		Model:     bifrostReq.Model,
 		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, AnthropicDefaultMaxTokens),

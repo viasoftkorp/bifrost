@@ -23,8 +23,18 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 		ModelID: bifrostReq.Model,
 	}
 
+	// Anthropic models on Bedrock reject requests where the last message role is assistant.
+	input := bifrostReq.Input
+	if schemas.IsAnthropicModel(bifrostReq.Model) {
+		trimmed := len(input)
+		for trimmed > 0 && input[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
+			trimmed--
+		}
+		input = input[:trimmed]
+	}
+
 	// Convert messages and system messages
-	messages, systemMessages, err := convertMessages(ctx, bifrostReq.Input)
+	messages, systemMessages, err := convertMessages(ctx, input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert messages: %w", err)
 	}

@@ -2566,7 +2566,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	}
 
 	if bifrostReq.Input != nil {
-		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostReq.Input)
+		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostReq.Input, true)
 
 		// Set system message if present
 		if systemContent != nil {
@@ -2759,7 +2759,7 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 	// Convert output messages to Anthropic content blocks using the new conversion method
 	var contentBlocks []AnthropicContentBlock
 	if bifrostResp.Output != nil {
-		anthropicMessages, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output)
+		anthropicMessages, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false)
 		// Extract content blocks from the converted messages
 		for _, msg := range anthropicMessages {
 			if msg.Content.ContentBlocks != nil {
@@ -2831,7 +2831,7 @@ func ConvertAnthropicMessagesToBifrostMessages(ctx *schemas.BifrostContext, anth
 
 // ConvertBifrostMessagesToAnthropicMessages converts an array of Bifrost ResponsesMessage to Anthropic message format
 // This is the main conversion method from Bifrost to Anthropic - handles all message types and returns messages + system content
-func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage) ([]AnthropicMessage, *AnthropicContent) {
+func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool) ([]AnthropicMessage, *AnthropicContent) {
 	// If only a single system message is present, convert it user message
 	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		if systemContent := convertBifrostMessageToAnthropicSystemContent(&bifrostMessages[0]); systemContent != nil {
@@ -2945,7 +2945,21 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		}
 	}
 
-	for _, msg := range bifrostMessages {
+	// Anthropic rejects requests where the last message role is assistant.
+	// Pre-compute the trim index so we can skip trailing assistant messages.
+	trimIndex := len(bifrostMessages)
+	if isRequestMessage {
+		for trimIndex > 0 {
+			m := bifrostMessages[trimIndex-1]
+			if m.Role != nil && *m.Role == schemas.ResponsesInputMessageRoleAssistant {
+				trimIndex--
+			} else {
+				break
+			}
+		}
+	}
+
+	for i, msg := range bifrostMessages {
 		// Handle nil Type as regular message
 		msgType := schemas.ResponsesMessageTypeMessage
 		if msg.Type != nil {
@@ -2963,6 +2977,11 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			// Handle system messages separately
 			if msg.Role != nil && (*msg.Role == schemas.ResponsesInputMessageRoleSystem || *msg.Role == schemas.ResponsesInputMessageRoleDeveloper) {
 				systemContent = convertBifrostMessageToAnthropicSystemContent(&msg)
+				continue
+			}
+
+			// Skip trailing assistant messages.
+			if isRequestMessage && i >= trimIndex {
 				continue
 			}
 
