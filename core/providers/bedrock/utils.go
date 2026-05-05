@@ -187,7 +187,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 
 				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 			} else {
-				bedrockReq.AdditionalModelRequestFields.Set("reasoning_config", map[string]any{
+				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 					"type":          "enabled",
 					"budget_tokens": tokenBudget,
 				})
@@ -260,7 +260,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					"type": "disabled",
 				})
 			} else {
-				bedrockReq.AdditionalModelRequestFields.Set("reasoning_config", map[string]any{
+				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 					"type": "disabled",
 				})
 			}
