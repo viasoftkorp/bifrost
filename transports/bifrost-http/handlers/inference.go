@@ -339,6 +339,8 @@ var transcriptionParamsKnownFields = map[string]bool{
 var batchCreateParamsKnownFields = map[string]bool{
 	"model":             true,
 	"input_file_id":     true,
+	"input_blob":        true,
+	"output_folder":     true,
 	"requests":          true,
 	"endpoint":          true,
 	"completion_window": true,
@@ -560,6 +562,8 @@ type BatchCreateRequest struct {
 	Model            string                     `json:"model"`                       // Model in "provider/model" format
 	InputFileID      string                     `json:"input_file_id,omitempty"`     // OpenAI-style file ID
 	Requests         []schemas.BatchRequestItem `json:"requests,omitempty"`          // Anthropic-style inline requests
+	InputBlob        *string                    `json:"input_blob,omitempty"`        // Azure-style blob storage input
+	OutputFolder     *schemas.BatchOutputFolder `json:"output_folder,omitempty"`     // Azure-style output destination
 	Endpoint         string                     `json:"endpoint,omitempty"`          // e.g., "/v1/chat/completions"
 	CompletionWindow string                     `json:"completion_window,omitempty"` // e.g., "24h"
 	Metadata         map[string]string          `json:"metadata,omitempty"`
@@ -2630,8 +2634,8 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Validate that at least one of InputFileID or Requests is provided
-	if req.InputFileID == "" && len(req.Requests) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "either input_file_id or requests is required")
+	if req.InputFileID == "" && len(req.Requests) == 0 && req.InputBlob == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "either input_file_id, input_blob, or requests is required")
 		return
 	}
 
@@ -2651,6 +2655,8 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		Provider:         schemas.ModelProvider(provider),
 		Model:            model,
 		InputFileID:      req.InputFileID,
+		InputBlob:        req.InputBlob,
+		OutputFolder:     req.OutputFolder,
 		Requests:         req.Requests,
 		Endpoint:         schemas.BatchEndpoint(req.Endpoint),
 		CompletionWindow: req.CompletionWindow,
