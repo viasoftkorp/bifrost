@@ -258,6 +258,9 @@ const SidebarItemView = ({
     "subItems" in item && item.subItems && item.subItems.length > 0;
   const isRouteMatch = (url: string) => {
     if (url === "/workspace/custom-pricing") return pathname === url;
+    // Avoid double-highlighting with "/workspace/mcp-registry/library"
+    if (url === "/workspace/mcp-registry")
+      return !pathname.startsWith("/workspace/mcp-registry/library") && pathname.startsWith(url);
     return pathname.startsWith(url);
   };
   const isAnySubItemActive =
@@ -825,6 +828,13 @@ export default function AppSidebar() {
             url: "/workspace/mcp-registry",
             icon: LayoutGrid,
             description: "MCP tool catalog",
+            hasAccess: hasMCPGatewayAccess,
+          },
+          {
+            title: "MCP Library",
+            url: "/workspace/mcp-registry/library",
+            icon: Boxes,
+            description: "Install curated MCP servers",
             hasAccess: hasMCPGatewayAccess,
           },
           {
