@@ -4,9 +4,19 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.17
+**Latest Version:** 2.1.18
 
 ## Changelog
+
+### 2.1.18
+
+- Added `bifrost.featureFlags` map to `values.yaml` and `_helpers.tpl`. Renders into `feature_flags.flags` in the generated config JSON. Each entry accepts a literal boolean or `"env.NAME"` string.
+- Added `bifrost.modelCatalog.modelParametersUrl` to `values.yaml`, `values.schema.json`, and `_helpers.tpl`, allowing operators to override the URL Bifrost uses to fetch model parameter definitions.
+- Fixed Deployment not exposing the cluster gRPC container port; fixed `service.yaml` missing the gRPC service port. Both now match StatefulSet/headless service behaviour.
+- Fixed Weaviate PVC rendering when `vectorStore.weaviate.persistence.enabled=false`; PVC is now gated on persistence being enabled.
+- Fixed Redis probes passing password via `-a` flag in process args; switched to `REDISCLI_AUTH` env var.
+- Fixed nondeterministic env var order for `providerSecrets` and `weaviate.env` map iterations; keys are now sorted with `sortAlpha`.
+- Corrected guardrail `timeout` examples in `values.yaml`: provider default is `30s`, rule default is `60s`.
 
 ### 2.1.17
 
