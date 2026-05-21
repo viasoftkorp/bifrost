@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"maps"
 
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/plugins"
+	otel "github.com/maximhq/bifrost/plugins/otel"
+	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -55,6 +58,89 @@ type UpdatePluginRequest struct {
 	Order     *int                     `json:"order,omitempty"`
 }
 
+// storageMarshaler is implemented by plugin config types that separate their
+// storage format (plain strings) from their default JSON format (full EnvVar objects).
+type storageMarshaler interface {
+	MarshalForStorage() ([]byte, error)
+}
+
+// normalizePluginConfig round-trips the config through the plugin's typed struct so
+// MarshalForStorage runs before DB write. This ensures EnvVar fields are stored as
+// plain strings ("env.FOO" or the literal value) rather than as full objects.
+// Unknown plugin names are returned unchanged.
+func normalizePluginConfig(name string, config map[string]any) map[string]any {
+	normalizeThrough := func(typed storageMarshaler) map[string]any {
+		raw, err := sonic.Marshal(config)
+		if err != nil {
+			return config
+		}
+		if err := sonic.Unmarshal(raw, typed); err != nil {
+			return config
+		}
+		normalized, err := typed.MarshalForStorage()
+		if err != nil {
+			return config
+		}
+		var out map[string]any
+		if err := sonic.Unmarshal(normalized, &out); err != nil {
+			return config
+		}
+		return out
+	}
+
+	switch name {
+	case otel.PluginName:
+		return normalizeThrough(&otel.Config{})
+	case telemetry.PluginName:
+		return normalizeThrough(&telemetry.Config{})
+	}
+	return config
+}
+
+// expandPluginConfigForAPI converts a stored plugin config (plain strings) into an
+// API-response shape with full EnvVar objects. Unmarshals into the typed plugin struct
+// (EnvVar.UnmarshalJSON resolves strings), calls Redacted(), then marshals normally —
+// since there is no custom MarshalJSON, *EnvVar fields serialize as full objects.
+func expandPluginConfigForAPI(name string, config map[string]any) map[string]any {
+	if config == nil {
+		return config
+	}
+
+	raw, err := sonic.Marshal(config)
+	if err != nil {
+		return map[string]any{}
+	}
+
+	toMap := func(v any) map[string]any {
+		b, err := sonic.Marshal(v)
+		if err != nil {
+			return map[string]any{}
+		}
+		var out map[string]any
+		if err := sonic.Unmarshal(b, &out); err != nil {
+			return map[string]any{}
+		}
+		return out
+	}
+
+	switch name {
+	case otel.PluginName:
+		var c otel.Config
+		if err := sonic.Unmarshal(raw, &c); err != nil {
+			return map[string]any{}
+		}
+		return toMap(c.Redacted())
+	case telemetry.PluginName:
+		var c telemetry.Config
+		if err := sonic.Unmarshal(raw, &c); err != nil {
+			return map[string]any{}
+		}
+		return toMap(c.Redacted())
+	}
+
+	return config
+}
+
 // RegisterRoutes registers the routes for the PluginsHandler
 func (h *PluginsHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/plugins", lib.ChainMiddlewares(h.getPlugins, middlewares...))
@@ -77,8 +163,14 @@ type PluginResponse struct {
 	Status     schemas.PluginStatus     `json:"status"`
 }
 
-// buildPluginResponse constructs a PluginResponse with status for a given TablePlugin.
+// buildPluginResponse constructs a PluginResponse, fetching plugin statuses once.
 func (h *PluginsHandler) buildPluginResponse(ctx context.Context, plugin *configstoreTables.TablePlugin) PluginResponse {
+	return h.buildPluginResponseWithStatuses(plugin, h.pluginsLoader.GetPluginStatus(ctx))
+}
+
+// buildPluginResponseWithStatuses constructs a PluginResponse using pre-fetched statuses.
+// Use this in list endpoints to avoid calling GetPluginStatus once per plugin.
+func (h *PluginsHandler) buildPluginResponseWithStatuses(plugin *configstoreTables.TablePlugin, pluginStatuses map[string]schemas.PluginStatus) PluginResponse {
 	pluginStatus := schemas.PluginStatus{
 		Name:   plugin.Name,
 		Status: schemas.PluginStatusUninitialized,
@@ -87,18 +179,22 @@ func (h *PluginsHandler) buildPluginResponse(ctx context.Context, plugin *config
 	if !plugin.Enabled {
 		pluginStatus.Status = schemas.PluginStatusDisabled
 	} else {
-		for _, status := range h.pluginsLoader.GetPluginStatus(ctx) {
+		for _, status := range pluginStatuses {
 			if plugin.Name == status.Name {
 				pluginStatus = status
 				break
 			}
 		}
 	}
+	config := plugin.Config
+	if configMap, ok := plugin.Config.(map[string]any); ok {
+		config = expandPluginConfigForAPI(plugin.Name, configMap)
+	}
 	return PluginResponse{
 		Name:       plugin.Name,
 		ActualName: pluginStatus.Name,
 		Enabled:    plugin.Enabled,
-		Config:     plugin.Config,
+		Config:     config,
 		IsCustom:   plugin.IsCustom,
 		Path:       plugin.Path,
 		Placement:  plugin.Placement,
@@ -142,38 +238,10 @@ func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve plugins")
 		return
 	}
-	// Fetching status
 	pluginStatuses := h.pluginsLoader.GetPluginStatus(ctx)
-	// Creating ephemeral struct for the plugins
 	finalPlugins := []PluginResponse{}
-
-	// Iterating over plugin status to get the plugin info
 	for _, plugin := range plugins {
-		pluginStatus := schemas.PluginStatus{
-			Name:   plugin.Name,
-			Status: schemas.PluginStatusUninitialized,
-			Logs:   []string{},
-		}
-		if !plugin.Enabled {
-			pluginStatus.Status = schemas.PluginStatusDisabled
-		}
-		for _, status := range pluginStatuses {
-			if plugin.Name == status.Name {
-				pluginStatus = status
-				break
-			}
-		}
-		finalPlugins = append(finalPlugins, PluginResponse{
-			Name:       plugin.Name,
-			ActualName: pluginStatus.Name,
-			Enabled:    plugin.Enabled,
-			Config:     plugin.Config,
-			IsCustom:   plugin.IsCustom,
-			Path:       plugin.Path,
-			Placement:  plugin.Placement,
-			Order:      plugin.Order,
-			Status:     pluginStatus,
-		})
+		finalPlugins = append(finalPlugins, h.buildPluginResponseWithStatuses(plugin, pluginStatuses))
 	}
 	// Creating ephemeral struct
 	SendJSON(ctx, map[string]any{
@@ -284,11 +352,13 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 	if isBuiltin && request.Path != nil {
 		request.Path = nil
 	}
+	// Normalize before DB write so EnvVar fields are stored as plain strings.
+	normalizedConfig := normalizePluginConfig(request.Name, request.Config)
 	// Create DB entry first to avoid orphaned in-memory state if DB write fails
 	if err := h.configStore.CreatePlugin(ctx, &configstoreTables.TablePlugin{
 		Name:      request.Name,
 		Enabled:   request.Enabled,
-		Config:    request.Config,
+		Config:    normalizedConfig,
 		Path:      request.Path,
 		IsCustom:  !isBuiltin,
 		Placement: request.Placement,
@@ -301,7 +371,7 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 
 	// Reload the plugin into memory if it's enabled
 	if request.Enabled {
-		if err := h.pluginsLoader.ReloadPlugin(ctx, request.Name, request.Path, request.Config, request.Placement, request.Order); err != nil {
+		if err := h.pluginsLoader.ReloadPlugin(ctx, request.Name, request.Path, normalizedConfig, request.Placement, request.Order); err != nil {
 			logger.Error("failed to load plugin: %v", err)
 			if rbErr := h.configStore.DeletePlugin(ctx, request.Name); rbErr != nil {
 				logger.Error("failed to rollback plugin creation: %v", rbErr)
@@ -415,6 +485,8 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 			maps.Copy(mergedConfig, request.Config)
 		}
 	}
+	// Normalize through the typed plugin config so custom MarshalJSON (e.g. EnvVar → string) runs.
+	mergedConfig = normalizePluginConfig(name, mergedConfig)
 	// Updating the plugin
 	if err := h.configStore.UpdatePlugin(ctx, &configstoreTables.TablePlugin{
 		Name:      name,

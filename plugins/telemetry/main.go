@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -38,8 +39,8 @@ const (
 type PushGatewayConfig struct {
 	// Enabled controls whether pushing metrics to the Push Gateway is active
 	Enabled bool `json:"enabled"`
-	// PushGatewayURL is the URL of the Prometheus Push Gateway (e.g., http://pushgateway:9091)
-	PushGatewayURL string `json:"push_gateway_url"`
+	// PushGatewayURL is the URL of the Prometheus Push Gateway (e.g., http://pushgateway:9091). Supports env.VAR_NAME.
+	PushGatewayURL *schemas.EnvVar `json:"push_gateway_url"`
 	// JobName is the job label for pushed metrics (default: "bifrost")
 	JobName string `json:"job_name"`
 	// InstanceID is the instance label for grouping metrics. If empty, hostname is used.
@@ -52,8 +53,72 @@ type PushGatewayConfig struct {
 
 // BasicAuthConfig holds basic authentication credentials for the Push Gateway
 type BasicAuthConfig struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username *schemas.EnvVar `json:"username"`
+	Password *schemas.EnvVar `json:"password"`
+}
+
+// MarshalForStorage serializes Config to JSON with *EnvVar fields as plain strings
+// ("env.VAR_NAME" or the literal value) for database/config-file persistence.
+// For HTTP API responses use json.Marshal directly so clients receive full EnvVar objects.
+func (c *Config) MarshalForStorage() ([]byte, error) {
+	type basicAuthStorage struct {
+		Username string `json:"username,omitempty"`
+		Password string `json:"password,omitempty"`
+	}
+	type pushGatewayStorage struct {
+		Enabled        bool              `json:"enabled"`
+		PushGatewayURL string            `json:"push_gateway_url,omitempty"`
+		JobName        string            `json:"job_name,omitempty"`
+		InstanceID     string            `json:"instance_id,omitempty"`
+		PushInterval   int               `json:"push_interval,omitempty"`
+		BasicAuth      *basicAuthStorage `json:"basic_auth,omitempty"`
+	}
+	type configStorage struct {
+		CustomLabels   []string            `json:"custom_labels,omitempty"`
+		MetricsEnabled *bool               `json:"metrics_enabled,omitempty"`
+		PushGateway    *pushGatewayStorage `json:"push_gateway,omitempty"`
+	}
+	storage := configStorage{
+		CustomLabels:   c.CustomLabels,
+		MetricsEnabled: c.MetricsEnabled,
+	}
+	if c.PushGateway != nil {
+		pgw := &pushGatewayStorage{
+			Enabled:        c.PushGateway.Enabled,
+			PushGatewayURL: schemas.EnvVarAsString(c.PushGateway.PushGatewayURL),
+			JobName:        c.PushGateway.JobName,
+			InstanceID:     c.PushGateway.InstanceID,
+			PushInterval:   c.PushGateway.PushInterval,
+		}
+		if c.PushGateway.BasicAuth != nil {
+			pgw.BasicAuth = &basicAuthStorage{
+				Username: schemas.EnvVarAsString(c.PushGateway.BasicAuth.Username),
+				Password: schemas.EnvVarAsString(c.PushGateway.BasicAuth.Password),
+			}
+		}
+		storage.PushGateway = pgw
+	}
+	return sonic.Marshal(storage)
+}
+
+// Redacted returns a copy of the config with EnvVar fields redacted for API responses.
+func (c *Config) Redacted() *Config {
+	if c == nil {
+		return nil
+	}
+	redacted := *c
+	if c.PushGateway != nil {
+		pg := *c.PushGateway
+		pg.PushGatewayURL = c.PushGateway.PushGatewayURL.Redacted()
+		if c.PushGateway.BasicAuth != nil {
+			ba := *c.PushGateway.BasicAuth
+			ba.Username = c.PushGateway.BasicAuth.Username.Redacted()
+			ba.Password = c.PushGateway.BasicAuth.Password.FullyRedacted()
+			pg.BasicAuth = &ba
+		}
+		redacted.PushGateway = &pg
+	}
+	return &redacted
 }
 
 // PrometheusPlugin implements the schemas.LLMPlugin interface for Prometheus metrics.
@@ -403,7 +468,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	plugin.metricsEnabled.Store(metricsEnabled)
 
 	// Start push gateway if configured
-	if config.PushGateway != nil && config.PushGateway.Enabled && config.PushGateway.PushGatewayURL != "" {
+	if config.PushGateway != nil && config.PushGateway.Enabled && config.PushGateway.PushGatewayURL.GetValue() != "" {
 		if err := plugin.EnablePushGateway(config.PushGateway); err != nil {
 			return nil, fmt.Errorf("failed to start push gateway: %w", err)
 		}
@@ -754,7 +819,7 @@ func (p *PrometheusPlugin) HTTPMiddleware(handler fasthttp.RequestHandler) fasth
 // EnablePushGateway starts pushing metrics to a Prometheus Push Gateway.
 // If push gateway is already active, it stops the existing one first.
 func (p *PrometheusPlugin) EnablePushGateway(config *PushGatewayConfig) error {
-	if config == nil || config.PushGatewayURL == "" {
+	if config == nil || config.PushGatewayURL.GetValue() == "" {
 		return fmt.Errorf("push_gateway_url is required")
 	}
 
@@ -778,12 +843,12 @@ func (p *PrometheusPlugin) EnablePushGateway(config *PushGatewayConfig) error {
 	}
 
 	// Create the pusher with the registry
-	pusher := push.New(config.PushGatewayURL, config.JobName).
+	pusher := push.New(config.PushGatewayURL.GetValue(), config.JobName).
 		Gatherer(p.registry).
 		Grouping("instance", config.InstanceID)
 
-	if config.BasicAuth != nil && config.BasicAuth.Username != "" {
-		pusher = pusher.BasicAuth(config.BasicAuth.Username, config.BasicAuth.Password)
+	if config.BasicAuth != nil && config.BasicAuth.Username.GetValue() != "" && config.BasicAuth.Password.GetValue() != "" {
+		pusher = pusher.BasicAuth(config.BasicAuth.Username.GetValue(), config.BasicAuth.Password.GetValue())
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -800,7 +865,7 @@ func (p *PrometheusPlugin) EnablePushGateway(config *PushGatewayConfig) error {
 	go p.pushLoop()
 
 	p.logger.Info("push gateway started, pushing to %s every %d seconds",
-		config.PushGatewayURL, config.PushInterval)
+		config.PushGatewayURL.GetValue(), config.PushInterval)
 
 	return nil
 }

@@ -60,22 +60,77 @@ type PluginSpanFilter struct {
 }
 
 type Config struct {
-	ServiceName  string            `json:"service_name"`
-	CollectorURL string            `json:"collector_url"`
-	Headers      map[string]string `json:"headers"`
-	TraceType    TraceType         `json:"trace_type"`
-	Protocol     Protocol          `json:"protocol"`
-	TLSCACert    string            `json:"tls_ca_cert"`
-	Insecure     bool              `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
+	ServiceName  string                     `json:"service_name"`
+	CollectorURL *schemas.EnvVar            `json:"collector_url"`
+	Headers      map[string]*schemas.EnvVar `json:"headers"`
+	TraceType    TraceType                  `json:"trace_type"`
+	Protocol     Protocol                   `json:"protocol"`
+	TLSCACert    string                     `json:"tls_ca_cert"`
+	Insecure     bool                       `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
 
 	// Metrics push configuration
-	MetricsEnabled      bool   `json:"metrics_enabled"`
-	MetricsEndpoint     string `json:"metrics_endpoint"`
-	MetricsPushInterval int    `json:"metrics_push_interval"` // in seconds, default 15
+	MetricsEnabled      bool            `json:"metrics_enabled"`
+	MetricsEndpoint     *schemas.EnvVar `json:"metrics_endpoint"`
+	MetricsPushInterval int             `json:"metrics_push_interval"` // in seconds, default 15
 
 	// PluginSpanFilter is the DB-stored fallback when otel_plugin_span_filter is absent in config.json.
 	// The top-level config.json field takes precedence and is passed via Init's pluginSpanFilter param.
 	PluginSpanFilter *PluginSpanFilter `json:"plugin_span_filter,omitempty"`
+}
+
+// MarshalForStorage serializes Config to JSON with *EnvVar fields as plain strings
+// ("env.VAR_NAME" or the literal value) for database/config-file persistence.
+// For HTTP API responses use json.Marshal directly so clients receive full EnvVar objects.
+func (c *Config) MarshalForStorage() ([]byte, error) {
+	type alias struct {
+		ServiceName         string            `json:"service_name"`
+		CollectorURL        string            `json:"collector_url"`
+		Headers             map[string]string `json:"headers,omitempty"`
+		TraceType           TraceType         `json:"trace_type"`
+		Protocol            Protocol          `json:"protocol"`
+		TLSCACert           string            `json:"tls_ca_cert,omitempty"`
+		Insecure            bool              `json:"insecure"`
+		MetricsEnabled      bool              `json:"metrics_enabled"`
+		MetricsEndpoint     string            `json:"metrics_endpoint,omitempty"`
+		MetricsPushInterval int               `json:"metrics_push_interval,omitempty"`
+		PluginSpanFilter    *PluginSpanFilter `json:"plugin_span_filter,omitempty"`
+	}
+	a := alias{
+		ServiceName:         c.ServiceName,
+		CollectorURL:        schemas.EnvVarAsString(c.CollectorURL),
+		TraceType:           c.TraceType,
+		Protocol:            c.Protocol,
+		TLSCACert:           c.TLSCACert,
+		Insecure:            c.Insecure,
+		MetricsEnabled:      c.MetricsEnabled,
+		MetricsEndpoint:     schemas.EnvVarAsString(c.MetricsEndpoint),
+		MetricsPushInterval: c.MetricsPushInterval,
+		PluginSpanFilter:    c.PluginSpanFilter,
+	}
+	if c.Headers != nil {
+		a.Headers = make(map[string]string, len(c.Headers))
+		for k, v := range c.Headers {
+			a.Headers[k] = schemas.EnvVarAsString(v)
+		}
+	}
+	return sonic.Marshal(a)
+}
+
+// Redacted returns a copy of the config with EnvVar fields redacted for API responses.
+func (c *Config) Redacted() *Config {
+	if c == nil {
+		return nil
+	}
+	redacted := *c
+	redacted.CollectorURL = c.CollectorURL.Redacted()
+	redacted.MetricsEndpoint = c.MetricsEndpoint.Redacted()
+	if c.Headers != nil {
+		redacted.Headers = make(map[string]*schemas.EnvVar, len(c.Headers))
+		for k, v := range c.Headers {
+			redacted.Headers[k] = v.Redacted()
+		}
+	}
+	return &redacted
 }
 
 // UnmarshalJSON applies field defaults that the zero-value wouldn't capture.
@@ -138,18 +193,6 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		logger.Warn("otel plugin requires model catalog to calculate cost, all cost calculations will be skipped.")
 	}
 	var err error
-	// If headers are present, and any of them start with env., we will replace the value with the environment variable
-	if config.Headers != nil {
-		for key, value := range config.Headers {
-			if newValue, ok := strings.CutPrefix(value, "env."); ok {
-				config.Headers[key] = os.Getenv(newValue)
-				if config.Headers[key] == "" {
-					logger.Warn("environment variable %s not found", newValue)
-					return nil, fmt.Errorf("environment variable %s not found", newValue)
-				}
-			}
-		}
-	}
 	if config.PluginSpanFilter != nil {
 		switch config.PluginSpanFilter.Mode {
 		case PluginSpanFilterModeInclude, PluginSpanFilterModeExclude:
@@ -190,9 +233,9 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 	// Preparing the plugin
 	p := &OtelPlugin{
 		serviceName:               config.ServiceName,
-		url:                       config.CollectorURL,
+		url:                       config.CollectorURL.GetValue(),
 		traceType:                 config.TraceType,
-		headers:                   config.Headers,
+		headers:                   resolveHeaders(config.Headers),
 		protocol:                  config.Protocol,
 		pricingManager:            pricingManager,
 		bifrostVersion:            bifrostVersion,
@@ -202,13 +245,13 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	if config.Protocol == ProtocolGRPC {
-		p.client, err = NewOtelClientGRPC(config.CollectorURL, config.Headers, config.TLSCACert, config.Insecure)
+		p.client, err = NewOtelClientGRPC(config.CollectorURL.GetValue(), p.headers, config.TLSCACert, config.Insecure)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if config.Protocol == ProtocolHTTP {
-		p.client, err = NewOtelClientHTTP(config.CollectorURL, config.Headers, config.TLSCACert, config.Insecure)
+		p.client, err = NewOtelClientHTTP(config.CollectorURL.GetValue(), p.headers, config.TLSCACert, config.Insecure)
 		if err != nil {
 			return nil, err
 		}
@@ -219,7 +262,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 
 	// Initialize metrics exporter if enabled
 	if config.MetricsEnabled {
-		if config.MetricsEndpoint == "" {
+		if !config.MetricsEndpoint.IsSet() {
 			return nil, fmt.Errorf("metrics_endpoint is required when metrics_enabled is true")
 		}
 		pushInterval := config.MetricsPushInterval
@@ -230,8 +273,8 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		}
 		metricsConfig := &MetricsConfig{
 			ServiceName:  config.ServiceName,
-			Endpoint:     config.MetricsEndpoint,
-			Headers:      config.Headers,
+			Endpoint:     config.MetricsEndpoint.GetValue(),
+			Headers:      p.headers,
 			Protocol:     config.Protocol,
 			TLSCACert:    config.TLSCACert,
 			Insecure:     config.Insecure,
@@ -245,7 +288,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 			}
 			return nil, fmt.Errorf("failed to initialize metrics exporter: %w", err)
 		}
-		logger.Info("OTEL metrics push enabled, pushing to %s every %d seconds", config.MetricsEndpoint, pushInterval)
+		logger.Info("OTEL metrics push enabled, pushing to %s every %d seconds", config.MetricsEndpoint.GetValue(), pushInterval)
 	}
 
 	return p, nil
@@ -295,7 +338,7 @@ func (p *OtelPlugin) ValidateConfig(config any) (*Config, error) {
 		otelConfig = *config
 	}
 	// Validating fields
-	if otelConfig.CollectorURL == "" {
+	if !otelConfig.CollectorURL.IsSet() {
 		return nil, fmt.Errorf("collector url is required")
 	}
 	if otelConfig.TraceType == "" {
@@ -519,6 +562,18 @@ func (p *OtelPlugin) Cleanup() error {
 // GetMetricsExporter returns the metrics exporter for external use (e.g., by telemetry plugin)
 func (p *OtelPlugin) GetMetricsExporter() *MetricsExporter {
 	return p.metricsExporter
+}
+
+// resolveHeaders converts a map of EnvVar header values to plain strings for use in HTTP/gRPC clients.
+func resolveHeaders(in map[string]*schemas.EnvVar) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v.GetValue()
+	}
+	return out
 }
 
 // firstNonEmpty returns the first non-empty string from the provided values.
