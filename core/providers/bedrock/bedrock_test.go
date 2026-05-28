@@ -2346,6 +2346,138 @@ func TestToBedrockResponsesRequest_AdditionalFields_InterfaceSlice(t *testing.T)
 	assert.Equal(t, []string{"/amazon-bedrock-invocationMetrics/inputTokenCount"}, bedrockReq.AdditionalModelResponseFieldPaths)
 }
 
+// TestToBedrockResponsesRequest_GuardrailConfig verifies that guardrailConfig in ExtraParams
+// is extracted into BedrockConverseRequest.GuardrailConfig (Responses path fix).
+func TestToBedrockResponsesRequest_GuardrailConfig(t *testing.T) {
+	trace := testTrace
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	req := &schemas.BifrostResponsesRequest{
+		Model: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+		Params: &schemas.ResponsesParameters{
+			ExtraParams: map[string]interface{}{
+				"guardrailConfig": map[string]interface{}{
+					"guardrailIdentifier": "test-guardrail-id",
+					"guardrailVersion":    "DRAFT",
+					"trace":               trace,
+				},
+			},
+		},
+	}
+
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockReq)
+
+	require.NotNil(t, bedrockReq.GuardrailConfig, "GuardrailConfig must be set from ExtraParams")
+	assert.Equal(t, "test-guardrail-id", bedrockReq.GuardrailConfig.GuardrailIdentifier)
+	assert.Equal(t, "DRAFT", bedrockReq.GuardrailConfig.GuardrailVersion)
+	require.NotNil(t, bedrockReq.GuardrailConfig.Trace)
+	assert.Equal(t, trace, *bedrockReq.GuardrailConfig.Trace)
+	// guardrailConfig must be removed from ExtraParams so it is not double-sent
+	assert.Nil(t, bedrockReq.ExtraParams)
+}
+
+// TestBedrockToBifrostResponse_TraceStoredInProviderExtraFields verifies that
+// ToBifrostResponsesResponse carries guardrail trace in ProviderExtraFields.
+func TestBedrockToBifrostResponse_TraceStoredInProviderExtraFields(t *testing.T) {
+	action := "BLOCKED"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	input := &bedrock.BedrockConverseResponse{
+		StopReason: "guardrail_intervened",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role:    bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{},
+			},
+		},
+		Trace: &bedrock.BedrockConverseTrace{
+			Guardrail: &bedrock.BedrockGuardrailTrace{
+				Action: &action,
+			},
+		},
+	}
+
+	bifrostResp, err := input.ToBifrostResponsesResponse(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, bifrostResp)
+
+	require.NotNil(t, bifrostResp.ProviderExtraFields, "ProviderExtraFields must be set when trace is present")
+	traceData, ok := bifrostResp.ProviderExtraFields["trace"]
+	require.True(t, ok, "trace key must exist in ProviderExtraFields")
+	trace, ok := traceData.(*bedrock.BedrockConverseTrace)
+	require.True(t, ok, "trace must be *BedrockConverseTrace")
+	require.NotNil(t, trace.Guardrail)
+	assert.Equal(t, action, *trace.Guardrail.Action)
+}
+
+// TestBifrostToBedrockResponse_TraceRestoredFromProviderExtraFields verifies that
+// ToBedrockConverseResponse restores trace from ProviderExtraFields (round-trip).
+func TestBifrostToBedrockResponse_TraceRestoredFromProviderExtraFields(t *testing.T) {
+	action := "BLOCKED"
+	trace := &bedrock.BedrockConverseTrace{
+		Guardrail: &bedrock.BedrockGuardrailTrace{
+			Action: &action,
+		},
+	}
+
+	input := &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("blocked")},
+					},
+				},
+			},
+		},
+		ProviderExtraFields: map[string]interface{}{
+			"trace": trace,
+		},
+	}
+
+	bedrockResp, err := bedrock.ToBedrockConverseResponse(input)
+	require.NoError(t, err)
+	require.NotNil(t, bedrockResp)
+
+	require.NotNil(t, bedrockResp.Trace, "Trace must be restored from ProviderExtraFields")
+	require.NotNil(t, bedrockResp.Trace.Guardrail)
+	assert.Equal(t, action, *bedrockResp.Trace.Guardrail.Action)
+}
+
+// TestFinalizeBedrockStream_WithTrace verifies that a guardrail trace captured mid-stream
+// is included in the response.completed event's ProviderExtraFields.
+func TestFinalizeBedrockStream_WithTrace(t *testing.T) {
+	action := "BLOCKED"
+	trace := &bedrock.BedrockConverseTrace{
+		Guardrail: &bedrock.BedrockGuardrailTrace{
+			Action: &action,
+		},
+	}
+
+	state := bedrock.NewBedrockResponsesStreamState()
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 10, TotalTokens: 15}
+
+	finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, trace)
+	require.NotEmpty(t, finalResponses)
+
+	// The last event must be response.completed
+	completed := finalResponses[len(finalResponses)-1]
+	require.Equal(t, schemas.ResponsesStreamResponseTypeCompleted, completed.Type)
+	require.NotNil(t, completed.Response)
+	require.NotNil(t, completed.Response.ProviderExtraFields, "ProviderExtraFields must be set when trace is present")
+
+	traceData, ok := completed.Response.ProviderExtraFields["trace"]
+	require.True(t, ok)
+	restoredTrace, ok := traceData.(*bedrock.BedrockConverseTrace)
+	require.True(t, ok)
+	require.NotNil(t, restoredTrace.Guardrail)
+	assert.Equal(t, action, *restoredTrace.Guardrail.Action)
+}
+
 func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testing.T) {
 	schemaObj := any(schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
