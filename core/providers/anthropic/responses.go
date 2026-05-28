@@ -43,6 +43,7 @@ type AnthropicResponsesStreamState struct {
 	ReasoningSignatures       map[int]string                    // Maps output_index to reasoning signature
 	TextContentIndices        map[int]bool                      // Tracks which content indices are text blocks
 	ReasoningContentIndices   map[int]bool                      // Tracks which content indices are reasoning blocks
+	TextBuffers               map[int]string                    // Maps output_index to accumulated text content for done events
 	CompactionContentIndices  map[int]*schemas.CacheControl     // Tracks pending compaction blocks with their cache control
 	CurrentOutputIndex        int                               // Current output index counter
 	MessageID                 *string                           // Message ID from message_start
@@ -71,6 +72,7 @@ var anthropicResponsesStreamStatePool = sync.Pool{
 			ReasoningContentIndices:   make(map[int]bool),
 			CompactionContentIndices:  make(map[int]*schemas.CacheControl),
 			OutputItems:               make(map[int]*schemas.ResponsesMessage),
+			TextBuffers:               make(map[int]string),
 			CurrentOutputIndex:        0,
 			CreatedAt:                 int(time.Now().Unix()),
 			HasEmittedCreated:         false,
@@ -147,6 +149,11 @@ func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	} else {
 		clear(state.ReasoningContentIndices)
 	}
+	if state.TextBuffers == nil {
+		state.TextBuffers = make(map[int]string)
+	} else {
+		clear(state.TextBuffers)
+	}
 	if state.CompactionContentIndices == nil {
 		state.CompactionContentIndices = make(map[int]*schemas.CacheControl)
 	} else {
@@ -207,6 +214,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.ReasoningSignatures = nil
 	state.TextContentIndices = nil
 	state.ReasoningContentIndices = nil
+	state.TextBuffers = nil
 	state.CompactionContentIndices = nil
 	state.OutputItems = nil
 	state.CurrentOutputIndex = 0
@@ -837,6 +845,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}
 			case AnthropicStreamDeltaTypeText:
 				if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
+					// Accumulate text for done events
+					state.TextBuffers[outputIndex] += *chunk.Delta.Text
+
 					// Text content delta - emit output_text.delta with item ID
 					itemID := state.ItemIDs[outputIndex]
 					response := &schemas.BifrostResponsesStreamResponse{
@@ -1124,29 +1135,41 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			var responses []*schemas.BifrostResponsesStreamResponse
 			itemID := state.ItemIDs[outputIndex]
 
+			// Capture accumulated text once — shared by output_text.done and output_item.done
+			accText := state.TextBuffers[outputIndex]
+
 			// Check if this content index is a text block
 			if chunk.Index != nil {
 				if state.TextContentIndices[*chunk.Index] {
-					// Emit output_text.done (without accumulated text, just the event)
-					emptyText := ""
+					// Emit output_text.done with full accumulated text
 					textDoneResponse := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
-						Text:           &emptyText,
+						Text:           &accText,
 					}
 					if itemID != "" {
 						textDoneResponse.ItemID = &itemID
 					}
 					responses = append(responses, textDoneResponse)
 
-					// Emit content_part.done
+					// Emit content_part.done with full accumulated text in Part
+					partText := accText
+					part := &schemas.ResponsesMessageContentBlock{
+						Type: schemas.ResponsesOutputMessageContentTypeText,
+						Text: &partText,
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						},
+					}
 					partDoneResponse := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   chunk.Index,
+						Part:           part,
 					}
 					if itemID != "" {
 						partDoneResponse.ItemID = &itemID
@@ -1292,17 +1315,38 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}
 				doneItem = &copied
 			} else {
+				// Build content blocks from accumulated text (captured above)
+				var contentBlocks []schemas.ResponsesMessageContentBlock
+				if accText != "" {
+					textCopy := accText
+					contentBlocks = []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeText,
+							Text: &textCopy,
+							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+							},
+						},
+					}
+				}
+				delete(state.TextBuffers, outputIndex)
 				doneItem = &schemas.ResponsesMessage{
 					Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 					Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Status: &statusCompleted,
 					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+						ContentBlocks: contentBlocks,
 					},
 				}
 				if doneItemID != "" {
 					doneItem.ID = &doneItemID
 				}
+				// Store in OutputItems so response.completed includes this text message
+				cloned := *doneItem
+				clonedContent := *doneItem.Content
+				cloned.Content = &clonedContent
+				state.OutputItems[outputIndex] = &cloned
 			}
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
@@ -5192,11 +5236,13 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		}
 	}
 
-	anthropicTool := &AnthropicTool{}
-
-	if tool.Name != nil {
-		anthropicTool.Name = *tool.Name
+	// Skip tools with no name — Anthropic rejects them
+	if tool.Name == nil || *tool.Name == "" {
+		return nil
 	}
+
+	anthropicTool := &AnthropicTool{}
+	anthropicTool.Name = *tool.Name
 
 	if tool.Description != nil {
 		anthropicTool.Description = tool.Description
