@@ -2192,6 +2192,8 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		model    string
 		expected bool
 	}{
+		{"claude-opus-4-8-20260601", true},
+		{"claude-opus-4.8-20260601", true},
 		{"claude-opus-4-7-20260401", true},
 		{"claude-opus-4.7-20260401", true},
 		{"claude-opus-4-6-20250514", true},
@@ -2202,6 +2204,7 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 		{"claude-sonnet-4-5-20241022", false},
 		{"claude-haiku-4-6-20250514", false}, // haiku does not support adaptive
 		{"claude-haiku-4-7-20260401", false}, // haiku, not opus
+		{"claude-haiku-4-8-20260601", false}, // haiku, not opus
 		{"", false},
 	}
 
@@ -2217,7 +2220,7 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 
 // TestSupportsEffortParameter pins the helper against the explicit doc list
 // at https://platform.claude.com/docs/en/build-with-claude/effort:
-// "Mythos Preview, Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5".
+// "Mythos Preview, Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5".
 func TestSupportsEffortParameter(t *testing.T) {
 	tests := []struct {
 		model    string
@@ -2225,6 +2228,8 @@ func TestSupportsEffortParameter(t *testing.T) {
 	}{
 		// Supported per docs.
 		{"claude-mythos-preview", true},
+		{"claude-opus-4-8", true},
+		{"claude-opus-4.8-20260601", true},
 		{"claude-opus-4-7", true},
 		{"claude-opus-4.7-20260401", true},
 		{"claude-opus-4-6", true},
@@ -2235,8 +2240,10 @@ func TestSupportsEffortParameter(t *testing.T) {
 		{"claude-opus-4.5-20251101", true},
 		{"claude-opus-4-5-20251101", true},
 		// Bedrock + Vertex IDs for supported models keep the substring shape.
+		{"anthropic.claude-opus-4-8-v1", true},
 		{"anthropic.claude-opus-4-7-v1", true},
 		{"global.anthropic.claude-sonnet-4-6", true},
+		{"claude-opus-4-8@20260601", true},
 		{"claude-opus-4-7@20260401", true},
 		// Not supported - the failing case from the upstream 400.
 		{"claude-haiku-4-5", false},
@@ -2304,6 +2311,15 @@ func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
 		{
 			name:  "sonnet 4.6 keeps effort",
 			model: "claude-sonnet-4-6",
+			req: &AnthropicMessageRequest{
+				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
+			},
+			wantEffort: &highEffort,
+			wantOCNil:  false,
+		},
+		{
+			name:  "opus 4.8 keeps effort",
+			model: "claude-opus-4-8",
 			req: &AnthropicMessageRequest{
 				OutputConfig: &AnthropicOutputConfig{Effort: &highEffort},
 			},
@@ -2519,6 +2535,9 @@ func TestComputerUseGeneration(t *testing.T) {
 		model string
 		want  string
 	}{
+		{"claude-opus-4-8", ComputerUseGen20251124},
+		{"claude-opus-4.8", ComputerUseGen20251124},
+		{"claude-opus-4-8-20260601", ComputerUseGen20251124},
 		{"claude-opus-4-7", ComputerUseGen20251124},
 		{"claude-opus-4.7", ComputerUseGen20251124},
 		{"Claude-Opus-4-7", ComputerUseGen20251124},
