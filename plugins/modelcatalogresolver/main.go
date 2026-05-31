@@ -75,6 +75,67 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 	if selected == "" {
 		return nil
 	}
+
+	// Respect the routing-allowlist set by an earlier plugin (e.g., governance VK config):
+	// intersect catalog candidates with the allowlist so the VK's provider restrictions hold
+	// even when no earlier routing plugin set req.Provider. Emit observability logs for both
+	// the partial-prune and all-pruned cases — the two-level enforcement (cooperative here +
+	// hard core enforcement) is only useful if the cooperative pruning is visible in routing
+	// engine logs when it fires.
+	if allowed, ok := ctx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider); ok {
+		preFilterCount := len(candidates)
+		preFilterStrs := make([]string, preFilterCount)
+		for i, prov := range candidates {
+			preFilterStrs[i] = string(prov)
+		}
+		allowedStrs := make([]string, len(allowed))
+		for i, prov := range allowed {
+			allowedStrs[i] = string(prov)
+		}
+		filtered := make([]schemas.ModelProvider, 0, preFilterCount)
+		excluded := make([]schemas.ModelProvider, 0)
+		for _, prov := range candidates {
+			if slices.Contains(allowed, prov) {
+				filtered = append(filtered, prov)
+			} else {
+				excluded = append(excluded, prov)
+			}
+		}
+		if len(excluded) > 0 {
+			filteredStrs := make([]string, len(filtered))
+			for i, prov := range filtered {
+				filteredStrs[i] = string(prov)
+			}
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
+				"Catalog returned %d candidate provider(s) for model %s: [%s]; provider allowlist is [%s], so excluded %d; remaining providers are [%s]",
+				preFilterCount, model, strings.Join(preFilterStrs, ", "),
+				strings.Join(allowedStrs, ", "),
+				len(excluded),
+				strings.Join(filteredStrs, ", "),
+			))
+		}
+		candidates = filtered
+		if len(candidates) == 0 {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
+				"Catalog returned %d candidate provider(s) for model %s: [%s]; provider allowlist [%s] excluded all of them; leaving req.Provider empty",
+				preFilterCount, model, strings.Join(preFilterStrs, ", "),
+				strings.Join(allowedStrs, ", "),
+			))
+			return nil
+		}
+		// Re-pick if the original integration-aware selection was excluded by the allowlist.
+		if !slices.Contains(candidates, selected) {
+			selected = candidates[0]
+			if integrationType != "" {
+				if integrationDefault, mapped := integrationTypeToDefaultProvider[integrationType]; mapped && integrationDefault != "" {
+					if slices.Contains(candidates, integrationDefault) {
+						selected = integrationDefault
+					}
+				}
+			}
+		}
+	}
+
 	req.SetProvider(selected)
 
 	candidateStrs := make([]string, len(candidates))
