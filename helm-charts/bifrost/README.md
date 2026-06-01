@@ -8,6 +8,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming [2.1.21]
+
+- Added `bifrost.governance.complexityAnalyzerConfig` to configure complexity router analyzer boundaries and keyword lists from Helm. The value renders into `governance.complexity_analyzer_config` in the generated `config.json` and remains opt-in, so existing installs are unchanged unless the value is set.
+
 ### 2.1.20
 
 - Added `tlsConfig` to `bifrost.mcp.clientConfigs[]` for HTTP and SSE MCP connection types:
