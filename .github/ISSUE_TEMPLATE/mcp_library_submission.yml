@@ -1,0 +1,69 @@
+name: "Add MCP Server to Library"
+description: "Propose a new MCP server for the Bifrost community library"
+title: "[MCP Library] Add: "
+labels: ["community", "mcp-library"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for contributing to the Bifrost MCP Library! Please fill out the details below, then open a PR editing `community/mcp-library/servers.json`.
+
+  - type: input
+    id: slug
+    attributes:
+      label: Server slug
+      description: "Unique kebab-case identifier (e.g. `my-server`)."
+      placeholder: "my-server"
+    validations:
+      required: true
+
+  - type: input
+    id: name
+    attributes:
+      label: Server name
+      description: "Human-readable display name."
+      placeholder: "My Server"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: "What does this MCP server do?"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: connection_type
+    attributes:
+      label: Connection type
+      options:
+        - http
+        - stdio
+        - sse
+    validations:
+      required: true
+
+  - type: input
+    id: docs_url
+    attributes:
+      label: Documentation URL
+      description: "Link to the server's docs, repo, or homepage."
+      placeholder: "https://github.com/example/mcp-server"
+    validations:
+      required: true
+
+  - type: input
+    id: publisher
+    attributes:
+      label: Publisher
+      description: "Person or organization that maintains this server."
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: "Anything else we should know? (auth requirements, setup notes, etc.)"

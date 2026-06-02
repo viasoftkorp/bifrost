@@ -1,0 +1,71 @@
+name: Community Catalog Validation
+
+on:
+  pull_request:
+    branches: ["dev", "main"]
+    paths:
+      - "community/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-mcp-library:
+    name: Validate MCP Library JSON
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "21"
+
+      - name: Validate servers.json against schema
+        run: |
+          npx --yes ajv-cli validate \
+            -s community/mcp-library/schema.json \
+            -d community/mcp-library/servers.json \
+            --spec=draft7
+
+      - name: Check for duplicate slugs
+        run: |
+          DUPES=$(jq -r '[.servers[].slug] | group_by(.) | map(select(length > 1)) | flatten | unique | .[]' community/mcp-library/servers.json)
+          if [ -n "$DUPES" ]; then
+            echo "❌ Duplicate slugs found:"
+            echo "$DUPES"
+            exit 1
+          fi
+          echo "✅ No duplicate slugs"
+
+      - name: Check slugs are sorted
+        run: |
+          SORTED=$(jq -r '[.servers[].slug]' community/mcp-library/servers.json)
+          EXPECTED=$(jq -r '[.servers[].slug] | sort' community/mcp-library/servers.json)
+          if [ "$SORTED" != "$EXPECTED" ]; then
+            echo "❌ Servers must be sorted alphabetically by slug."
+            echo ""
+            echo "Expected order:"
+            echo "$EXPECTED" | jq -r '.[]'
+            echo ""
+            echo "Run: jq '.servers |= sort_by(.slug)' community/mcp-library/servers.json > tmp.json && mv tmp.json community/mcp-library/servers.json"
+            exit 1
+          fi
+          echo "✅ Servers are sorted by slug"
+
+      - name: Validate JSON formatting
+        run: |
+          FORMATTED=$(jq --indent 2 '.' community/mcp-library/servers.json)
+          ACTUAL=$(cat community/mcp-library/servers.json)
+          if [ "$FORMATTED" != "$ACTUAL" ]; then
+            echo "❌ servers.json is not properly formatted."
+            echo "Run: jq --indent 2 '.' community/mcp-library/servers.json > tmp.json && mv tmp.json community/mcp-library/servers.json"
+            exit 1
+          fi
+          echo "✅ JSON is properly formatted"
