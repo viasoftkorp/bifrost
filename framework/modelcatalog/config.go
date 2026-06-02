@@ -17,10 +17,13 @@ const (
 
 	ConfigLastPricingSyncKey      = "LastModelPricingSync"
 	ConfigLastParamsSyncKey       = "LastModelParametersSync"
+	ConfigLastMCPLibrarySyncKey   = "LastMCPLibrarySync"
 	DefaultPricingURL             = "https://getbifrost.ai/datasheet"
 	DefaultModelParametersURL     = "https://getbifrost.ai/datasheet/model-parameters"
+	DefaultMCPLibraryURL          = "https://getbifrost.ai/mcp-library"
 	DefaultPricingTimeout         = 45 * time.Second
 	DefaultModelParametersTimeout = 45 * time.Second
+	DefaultMCPLibraryTimeout      = 45 * time.Second
 )
 
 // Config is the model pricing configuration.
@@ -28,4 +31,10 @@ type Config struct {
 	PricingURL          *string `json:"pricing_url,omitempty"`
 	PricingSyncInterval *int64  `json:"pricing_sync_interval,omitempty"` // seconds
 	ModelParametersURL  *string `json:"model_parameters_url,omitempty"`
+
+	// MCPLibraryURL overrides the endpoint the MCP server library catalog is
+	// synced from. Empty/nil uses DefaultMCPLibraryURL. Mirrors PricingURL: the
+	// default ships out of the box and the user can point it at a custom source.
+	MCPLibraryURL          *string `json:"mcp_library_url,omitempty"`
+	MCPLibrarySyncInterval *int64  `json:"mcp_library_sync_interval,omitempty"` // seconds
 }
