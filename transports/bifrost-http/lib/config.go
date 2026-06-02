@@ -3851,6 +3851,11 @@ func ResolveFrameworkPricingConfig(
 	resolvedModelParametersURL := &defaultModelParametersURL
 	resolvedSyncSeconds := &defaultSyncSeconds
 
+	defaultMCPLibraryURL := modelcatalog.DefaultMCPLibraryURL
+	defaultMCPLibrarySyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
+	resolvedMCPLibraryURL := &defaultMCPLibraryURL
+	resolvedMCPLibrarySyncInterval := &defaultMCPLibrarySyncSeconds
+
 	if filePricingURL != nil {
 		resolvedPricingURL = filePricingURL
 		logger.Debug("pricing_url resolved from file")
@@ -3862,6 +3867,22 @@ func ResolveFrameworkPricingConfig(
 	if fileSyncSeconds != nil {
 		resolvedSyncSeconds = fileSyncSeconds
 		logger.Debug("pricing_sync_interval resolved from file: %d seconds", *fileSyncSeconds)
+	}
+
+	// MCP library catalog sync source. Simpler precedence than pricing: no env
+	// substitution and no hash-gated override — file overrides default, DB
+	// overrides file (handled in Phase 3 below).
+	if fileConfig != nil && fileConfig.Pricing != nil {
+		if fileConfig.Pricing.MCPLibraryURL != nil {
+			if raw := strings.TrimSpace(*fileConfig.Pricing.MCPLibraryURL); raw != "" {
+				resolvedMCPLibraryURL = &raw
+			}
+		}
+		if fileConfig.Pricing.MCPLibrarySyncInterval != nil {
+			if val := *fileConfig.Pricing.MCPLibrarySyncInterval; val > 0 {
+				resolvedMCPLibrarySyncInterval = &val
+			}
+		}
 	}
 
 	// --- Phase 3: DB values applied; file wins on hash mismatch (file changed since last write) ---
@@ -3926,6 +3947,15 @@ func ResolveFrameworkPricingConfig(
 		} else {
 			needsDBUpdate = true
 		}
+
+		// MCP library config: DB is authoritative once set. No hash gating —
+		// these fields are managed via the API, not config.json sync.
+		if dbConfig.MCPLibraryURL != nil && strings.TrimSpace(*dbConfig.MCPLibraryURL) != "" {
+			resolvedMCPLibraryURL = dbConfig.MCPLibraryURL
+		}
+		if dbConfig.MCPLibrarySyncInterval != nil && *dbConfig.MCPLibrarySyncInterval > 0 {
+			resolvedMCPLibrarySyncInterval = dbConfig.MCPLibrarySyncInterval
+		}
 	}
 
 	// --- Phase 4: nil guard ---
@@ -3941,6 +3971,12 @@ func ResolveFrameworkPricingConfig(
 		logger.Warn("invariant violation: pricing_sync_interval resolved to nil — falling back to default %d seconds", defaultSyncSeconds)
 		resolvedSyncSeconds = &defaultSyncSeconds
 	}
+	if resolvedMCPLibraryURL == nil {
+		resolvedMCPLibraryURL = &defaultMCPLibraryURL
+	}
+	if resolvedMCPLibrarySyncInterval == nil {
+		resolvedMCPLibrarySyncInterval = &defaultMCPLibrarySyncSeconds
+	}
 
 	// Only update the stored hash when the file actually changed; preserve the
 	// existing hash for correction-only DB updates (null backfill, corruption fix).
@@ -3953,15 +3989,19 @@ func ResolveFrameworkPricingConfig(
 	}
 
 	return &configstoreTables.TableFrameworkConfig{
-			ID:                  configID,
-			PricingURL:          resolvedPricingURL,
-			PricingSyncInterval: resolvedSyncSeconds,
-			ModelParametersURL:  resolvedModelParametersURL,
-			ConfigHash:          persistedHash,
+			ID:                     configID,
+			PricingURL:             resolvedPricingURL,
+			PricingSyncInterval:    resolvedSyncSeconds,
+			ModelParametersURL:     resolvedModelParametersURL,
+			MCPLibraryURL:          resolvedMCPLibraryURL,
+			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+			ConfigHash:             persistedHash,
 		}, &modelcatalog.Config{
-			PricingURL:          resolvedPricingURL,
-			PricingSyncInterval: resolvedSyncSeconds,
-			ModelParametersURL:  resolvedModelParametersURL,
+			PricingURL:             resolvedPricingURL,
+			PricingSyncInterval:    resolvedSyncSeconds,
+			ModelParametersURL:     resolvedModelParametersURL,
+			MCPLibraryURL:          resolvedMCPLibraryURL,
+			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
 		}, needsDBUpdate
 }
 

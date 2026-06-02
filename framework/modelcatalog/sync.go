@@ -305,10 +305,10 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 	if time.Since(lastSync) >= interval {
 		mc.logger.Debug("starting model catalog background sync")
 		if err := mc.withDistributedLock(ctx, "model_catalog_pricing_sync", 10, func() error {
-			// Sync pricing and model parameters in parallel
+			// Sync pricing, model parameters, and MCP library in parallel
 			var wg sync.WaitGroup
-			var pricingErr, paramsErr error
-			wg.Add(2)
+			var pricingErr, paramsErr, mcpLibErr error
+			wg.Add(3)
 			go func() {
 				defer wg.Done()
 				if err := mc.syncPricing(ctx); err != nil {
@@ -323,6 +323,13 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 					paramsErr = err
 				}
 			}()
+			go func() {
+				defer wg.Done()
+				if err := mc.syncMCPLibrary(ctx); err != nil {
+					mc.logger.Error("background MCP library sync failed: %v", err)
+					mcpLibErr = err
+				}
+			}()
 			wg.Wait()
 
 			if pricingErr == nil && paramsErr == nil {
@@ -331,6 +338,11 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 				}
 				mc.syncMu.Lock()
 				mc.lastSyncedAt = time.Now()
+				mc.syncMu.Unlock()
+			}
+			if mcpLibErr == nil {
+				mc.syncMu.Lock()
+				mc.lastMCPLibrarySyncedAt = time.Now()
 				mc.syncMu.Unlock()
 			}
 			if pricingErr != nil {
