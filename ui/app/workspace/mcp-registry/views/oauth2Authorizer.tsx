@@ -2,8 +2,8 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { getErrorMessage } from "@/lib/store/apis/baseApi";
 import { useCompleteOAuthFlowMutation, useLazyGetOAuthConfigStatusQuery } from "@/lib/store/apis/mcpApi";
-import { Loader2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, ExternalLink, KeyRound, Loader2, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 interface OAuth2AuthorizerProps {
 	open: boolean;
@@ -16,18 +16,8 @@ interface OAuth2AuthorizerProps {
 	isPerUserOauth?: boolean;
 }
 
-export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
-	open,
-	onClose,
-	onSuccess,
-	onError,
-	authorizeUrl,
-	oauthConfigId,
-	isPerUserOauth,
-}) => {
-	const [status, setStatus] = useState<"confirm" | "pending" | "blocked" | "polling" | "success" | "failed">(
-		isPerUserOauth ? "confirm" : "pending",
-	);
+export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({ open, onClose, onSuccess, onError, authorizeUrl, oauthConfigId, isPerUserOauth }) => {
+	const [status, setStatus] = useState<"confirm" | "pending" | "blocked" | "polling" | "success" | "failed">(isPerUserOauth ? "confirm" : "pending");
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
 	const popupRef = useRef<Window | null>(null);
 	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -39,6 +29,13 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	// RTK Query hooks
 	const [getOAuthStatus] = useLazyGetOAuthConfigStatusQuery();
 	const [completeOAuth] = useCompleteOAuthFlowMutation();
+	const authorizationHost = useMemo(() => {
+		try {
+			return new URL(authorizeUrl).host;
+		} catch {
+			return "the OAuth provider";
+		}
+	}, [authorizeUrl]);
 
 	// Stop polling
 	const stopPolling = useCallback(() => {
@@ -158,11 +155,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		const left = window.screen.width / 2 - width / 2;
 		const top = window.screen.height / 2 - height / 2;
 
-		const popup = window.open(
-			authorizeUrl,
-			"oauth_popup",
-			`width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`,
-		);
+		const popup = window.open(authorizeUrl, "oauth_popup", `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
 
 		if (!popup || popup.closed) {
 			popupRef.current = null;
@@ -182,7 +175,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		const handleMessage = (event: MessageEvent) => {
 			// Only accept messages from the popup we opened and our own callback origin.
 			if (event.source !== popupRef.current || event.origin !== window.location.origin) {
-				return
+				return;
 			}
 
 			if (event.data?.type === "oauth_success") {
@@ -234,6 +227,16 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		onClose();
 	};
 
+	const title = status === "confirm" ? "Verify OAuth setup" : "Authorize connection";
+	const description = {
+		confirm: "Run a one-time OAuth test before enabling this server.",
+		pending: "Open a secure authorization window to continue.",
+		blocked: "The authorization window was blocked.",
+		polling: "Waiting for the OAuth provider to confirm access.",
+		success: "OAuth authorization completed.",
+		failed: "OAuth authorization failed.",
+	}[status];
+
 	return (
 		<Dialog
 			open={open}
@@ -244,7 +247,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 			}}
 		>
 			<DialogContent
-				className="sm:max-w-md"
+				className="gap-0 overflow-hidden p-0 sm:max-w-lg"
 				onPointerDownOutside={(e) => {
 					e.preventDefault();
 					handleCancel();
@@ -254,37 +257,50 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 					handleCancel();
 				}}
 			>
-				<DialogHeader>
-					<DialogTitle>{status === "confirm" ? "Test OAuth Configuration" : "OAuth Authorization"}</DialogTitle>
-					<DialogDescription>
-						{status === "confirm" && "A one-time login is needed to verify your OAuth setup."}
-						{status === "pending" && "Open the authorization window to continue"}
-						{status === "blocked" && "Authorization window was blocked"}
-						{status === "polling" && "Waiting for authorization..."}
-						{status === "success" && "Authorization successful!"}
-						{status === "failed" && "Authorization failed"}
-					</DialogDescription>
+				<DialogHeader className="border-b px-6 py-5 text-left">
+					<div className="flex items-start gap-3">
+						<div className="bg-primary/10 text-primary flex size-10 shrink-0 items-center justify-center rounded-sm border">
+							{status === "polling" ? (
+								<Loader2 className="size-5 animate-spin" />
+							) : status === "success" ? (
+								<CheckCircle2 className="size-5" />
+							) : status === "failed" ? (
+								<XCircle className="size-5" />
+							) : status === "blocked" ? (
+								<AlertTriangle className="size-5" />
+							) : (
+								<ShieldCheck className="size-5" />
+							)}
+						</div>
+						<div className="min-w-0 space-y-1">
+							<DialogTitle>{title}</DialogTitle>
+							<DialogDescription>{description}</DialogDescription>
+						</div>
+					</div>
 				</DialogHeader>
 
-				<div className="flex flex-col items-center justify-center space-y-4">
+				<div className="space-y-4 px-6 py-5">
 					{status === "confirm" && (
 						<>
-							<div className="text-muted-foreground space-y-3 text-sm">
-								<p>
-									To set up this MCP server, we need to verify that your OAuth configuration is correct and discover the available tools.
-								</p>
-								<p>
-									You will be asked to log in to the OAuth provider. This is a <strong>one-time test</strong> to confirm the setup works.
-									Your credentials will <strong>not</strong> be stored or used for any other purpose.
-								</p>
-								<p>Once verified, each user will authenticate individually when they use this MCP server.</p>
+							<div className="rounded-sm border bg-muted/20 p-4">
+								<div className="flex gap-3">
+									<KeyRound className="text-muted-foreground mt-0.5 size-4 shrink-0" />
+									<div className="space-y-2 text-sm">
+										<p>We will open {authorizationHost} to verify the OAuth configuration and discover available tools.</p>
+										<p className="text-muted-foreground">
+											This login is only used for setup verification. Each user will authenticate individually when they use this MCP
+											server.
+										</p>
+									</div>
+								</div>
 							</div>
 							<div className="flex w-full justify-end space-x-2">
 								<Button onClick={handleCancel} variant="outline" data-testid="per-user-oauth-cancel">
 									Cancel
 								</Button>
 								<Button onClick={handleConfirmPerUserOAuth} data-testid="per-user-oauth-confirm">
-									Continue with Test Login
+									<ExternalLink className="size-4" />
+									Continue
 								</Button>
 							</div>
 						</>
@@ -292,17 +308,32 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 
 					{(status === "pending" || status === "blocked") && (
 						<>
-							<p className="text-muted-foreground text-sm">
-								{status === "blocked"
-									? "Your browser blocked the authorization window. Open it manually to continue."
-									: "Open the authorization window to sign in and complete the connection."}
-							</p>
+							<div className="rounded-sm border bg-muted/20 p-4">
+								<div className="flex gap-3">
+									{status === "blocked" ? (
+										<AlertTriangle className="text-amber-600 mt-0.5 size-4 shrink-0" />
+									) : (
+										<ExternalLink className="text-muted-foreground mt-0.5 size-4 shrink-0" />
+									)}
+									<div className="space-y-1 text-sm">
+										<p className="font-medium">
+											{status === "blocked" ? "Allow popups, then try again." : "Sign in with the OAuth provider."}
+										</p>
+										<p className="text-muted-foreground">
+											{status === "blocked"
+												? "Your browser prevented Bifrost from opening the authorization window automatically."
+												: `Bifrost will open ${authorizationHost} in a separate window and listen for the callback.`}
+										</p>
+									</div>
+								</div>
+							</div>
 							<div className="flex w-full justify-end space-x-2">
 								<Button onClick={handleCancel} variant="outline" data-testid="oauth-pending-cancel-btn">
 									Cancel
 								</Button>
 								<Button onClick={openPopup} data-testid="oauth-open-window-btn">
-									Open Authorization Window
+									<ExternalLink className="size-4" />
+									Open authorization
 								</Button>
 							</div>
 						</>
@@ -310,44 +341,62 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 
 					{status === "polling" && (
 						<>
-							<Loader2 className="text-secondary-foreground h-4 w-4 animate-spin" />
-							<p className="text-muted-foreground text-sm">Please complete authorization in the popup window</p>
+							<div className="rounded-sm border bg-muted/20 p-4">
+								<div className="flex gap-3">
+									<Loader2 className="text-primary mt-0.5 size-4 shrink-0 animate-spin" />
+									<div className="space-y-1 text-sm">
+										<p className="font-medium">Complete authorization in the popup window.</p>
+										<p className="text-muted-foreground">
+											This dialog will update automatically after the provider redirects back to Bifrost.
+										</p>
+									</div>
+								</div>
+							</div>
+							<div className="flex justify-end">
+								<Button onClick={handleCancel} variant="outline">
+									Cancel
+								</Button>
+							</div>
 						</>
 					)}
 
 					{status === "success" && (
-						<>
-							<div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
-								<svg className="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-								</svg>
+						<div className="rounded-sm border border-green-200/50 bg-green-50/60 p-4 text-green-900 dark:border-green-800/40 dark:bg-green-950/30 dark:text-green-100">
+							<div className="flex gap-3">
+								<CheckCircle2 className="mt-0.5 size-4 shrink-0" />
+								<div className="space-y-1 text-sm">
+									<p className="font-medium">Connection authorized.</p>
+									<p className="text-green-700 dark:text-green-200">Bifrost is finishing setup and syncing the MCP server tools.</p>
+								</div>
 							</div>
-							<p className="text-sm text-green-600">MCP server connected successfully!</p>
-						</>
+						</div>
 					)}
 
 					{status === "failed" && (
 						<>
-							<div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
-								<svg className="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-								</svg>
+							<div className="rounded-sm border border-red-200/50 bg-red-50/60 p-4 text-red-900 dark:border-red-800/40 dark:bg-red-950/30 dark:text-red-100">
+								<div className="flex gap-3">
+									<XCircle className="mt-0.5 size-4 shrink-0" />
+									<div className="space-y-1 text-sm">
+										<p className="font-medium">Authorization did not complete.</p>
+										<p className="text-red-700 dark:text-red-200">
+											{errorMessage || "Try again, or check the OAuth provider configuration."}
+										</p>
+									</div>
+								</div>
 							</div>
-							<p className="text-sm text-red-600">{errorMessage || "An error occurred"}</p>
-							<Button onClick={handleRetry} variant="outline">
-								Retry
-							</Button>
+							<div className="flex justify-end gap-2">
+								<Button onClick={handleCancel} variant="outline">
+									Close
+								</Button>
+								<Button onClick={handleRetry}>
+									<RefreshCw className="size-4" />
+									Retry
+								</Button>
+							</div>
 						</>
 					)}
 				</div>
-
-				{status === "polling" && (
-					<div className="flex justify-end space-x-2">
-						<Button onClick={handleCancel} variant="outline">
-							Cancel
-						</Button>
-					</div>
-				)}
 			</DialogContent>
 		</Dialog>
 	);
