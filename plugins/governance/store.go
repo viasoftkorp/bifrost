@@ -1267,6 +1267,56 @@ func (gs *LocalGovernanceStore) CheckTeamRateLimit(ctx context.Context, teamID s
 	return gs.CheckRateLimit(ctx, entityWiseRateLimits, tokensBaselines, requestsBaselines)
 }
 
+// CollectTeamBudgets returns the live budget objects configured for a team,
+// resolved by ID from the hot budgets map (so usage counters and recent edits
+// are reflected). Mirrors the read pattern in CheckTeamBudget. Returns nil when
+// the team is unknown or has no budgets. Exported so the enterprise layer can
+// fold team budgets into a user→team→business-unit hierarchy collector the same
+// way collectBudgetsFromHierarchy folds them into the VK hierarchy.
+func (gs *LocalGovernanceStore) CollectTeamBudgets(ctx context.Context, teamID string) []*configstoreTables.TableBudget {
+	if teamID == "" {
+		return nil
+	}
+	teamValue, exists := gs.teams.Load(teamID)
+	if !exists || teamValue == nil {
+		return nil
+	}
+	team, ok := teamValue.(*configstoreTables.TableTeam)
+	if !ok || team == nil || len(team.Budgets) == 0 {
+		return nil
+	}
+	list := make([]*configstoreTables.TableBudget, 0, len(team.Budgets))
+	for _, b := range team.Budgets {
+		if hot := gs.LoadBudget(ctx, b.ID); hot != nil {
+			list = append(list, hot)
+		}
+	}
+	return list
+}
+
+// CollectTeamRateLimits returns the live rate-limit object configured for a team
+// (at most one), resolved by ID from the hot rate-limits map. Mirrors the read
+// pattern in CheckTeamRateLimit. Returns nil when the team is unknown or has no
+// rate limit. Exported for the enterprise user-hierarchy collector.
+func (gs *LocalGovernanceStore) CollectTeamRateLimits(ctx context.Context, teamID string) []*configstoreTables.TableRateLimit {
+	if teamID == "" {
+		return nil
+	}
+	teamValue, exists := gs.teams.Load(teamID)
+	if !exists || teamValue == nil {
+		return nil
+	}
+	team, ok := teamValue.(*configstoreTables.TableTeam)
+	if !ok || team == nil || team.RateLimitID == nil {
+		return nil
+	}
+	rl := gs.LoadRateLimit(ctx, *team.RateLimitID)
+	if rl == nil {
+		return nil
+	}
+	return []*configstoreTables.TableRateLimit{rl}
+}
+
 // CheckCustomerBudget checks customer-level budget and returns evaluation result if violated
 func (gs *LocalGovernanceStore) CheckCustomerBudget(ctx context.Context, customerID string, request *EvaluationRequest, baselines map[string]float64) (Decision, error) {
 	if customerID == "" {
