@@ -13,6 +13,13 @@ func (mc *ModelCatalog) UpsertLive(provider schemas.ModelProvider, keyID string,
 	mc.live.Upsert(provider, keyID, unfiltered, models)
 }
 
+// UpsertLiveFromResponse extracts model IDs from a BifrostListModelsResponse
+// (parsing "provider/model" prefixes, filtering by provider match,
+// deduplicating) and pushes them into the live cache.
+func (mc *ModelCatalog) UpsertLiveFromResponse(provider schemas.ModelProvider, keyID string, unfiltered bool, resp *schemas.BifrostListModelsResponse) {
+	mc.live.Upsert(provider, keyID, unfiltered, extractModelIDs(resp, provider))
+}
+
 // InvalidateLive drops both filtered + unfiltered live entries for one key.
 func (mc *ModelCatalog) InvalidateLive(provider schemas.ModelProvider, keyID string) {
 	mc.live.Invalidate(provider, keyID)
