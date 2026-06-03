@@ -52,6 +52,6 @@ func (h *CompletionHandler) applyListModelsVirtualKeyProviderFilter(ctx *fasthtt
 		availableProviders = append(availableProviders, schemas.ModelProvider(provider))
 	}
 
-	bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, availableProviders)
 	return true
 }

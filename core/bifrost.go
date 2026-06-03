@@ -609,7 +609,7 @@ func filterProvidersByContext(ctx *schemas.BifrostContext, providerKeys []schema
 		return providerKeys
 	}
 
-	rawAvailableProviders := ctx.Value(schemas.BifrostContextKeyAvailableProviders)
+	rawAvailableProviders := ctx.Value(schemas.BifrostContextKeyRoutingAllowedProviders)
 	if rawAvailableProviders == nil {
 		return providerKeys
 	}

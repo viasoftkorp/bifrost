@@ -805,7 +805,7 @@ func TestFilterProvidersByContext(t *testing.T) {
 
 	t.Run("available providers restrict list models fanout", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{schemas.Anthropic})
+		ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, []schemas.ModelProvider{schemas.Anthropic})
 
 		filtered := filterProvidersByContext(ctx, providers)
 		if len(filtered) != 1 || filtered[0] != schemas.Anthropic {
@@ -815,7 +815,7 @@ func TestFilterProvidersByContext(t *testing.T) {
 
 	t.Run("empty available providers denies all providers", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{})
+		ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, []schemas.ModelProvider{})
 
 		filtered := filterProvidersByContext(ctx, providers)
 		if len(filtered) != 0 {
@@ -825,7 +825,7 @@ func TestFilterProvidersByContext(t *testing.T) {
 
 	t.Run("malformed available providers fails closed", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, "openai")
+		ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, "openai")
 
 		filtered := filterProvidersByContext(ctx, providers)
 		if len(filtered) != 0 {

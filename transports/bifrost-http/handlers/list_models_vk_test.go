@@ -46,7 +46,7 @@ func TestApplyListModelsVirtualKeyProviderFilterSetsActiveVKProviders(t *testing
 	if ok := h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx); !ok {
 		t.Fatalf("expected active VK to apply provider filter")
 	}
-	got, ok := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+	got, ok := bifrostCtx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider)
 	if !ok {
 		t.Fatalf("expected available providers to be set")
 	}
@@ -116,8 +116,8 @@ func TestApplyListModelsVirtualKeyProviderFilterSkipsWhenVKNotFound(t *testing.T
 		if ok := h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx); !ok {
 			t.Fatalf("expected missing VK to be ignored without failing request")
 		}
-		if got := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders); got != nil {
-			t.Fatalf("expected missing VK not to set available providers, got %#v", got)
+		if got := bifrostCtx.Value(schemas.BifrostContextKeyRoutingAllowedProviders); got != nil {
+			t.Fatalf("expected missing VK not to set routing allowed providers, got %#v", got)
 		}
 	})
 
@@ -135,8 +135,8 @@ func TestApplyListModelsVirtualKeyProviderFilterSkipsWhenVKNotFound(t *testing.T
 		if ok := h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx); !ok {
 			t.Fatalf("expected ErrNotFound to be ignored without failing request")
 		}
-		if got := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders); got != nil {
-			t.Fatalf("expected ErrNotFound not to set available providers, got %#v", got)
+		if got := bifrostCtx.Value(schemas.BifrostContextKeyRoutingAllowedProviders); got != nil {
+			t.Fatalf("expected ErrNotFound not to set routing allowed providers, got %#v", got)
 		}
 	})
 }
@@ -161,7 +161,7 @@ func TestApplyListModelsVirtualKeyProviderFilterSkipsInactiveVK(t *testing.T) {
 	if ok := h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx); !ok {
 		t.Fatalf("expected inactive VK to be ignored without failing request")
 	}
-	if got := bifrostCtx.Value(schemas.BifrostContextKeyAvailableProviders); got != nil {
-		t.Fatalf("expected inactive VK not to set available providers, got %#v", got)
+	if got := bifrostCtx.Value(schemas.BifrostContextKeyRoutingAllowedProviders); got != nil {
+		t.Fatalf("expected inactive VK not to set routing allowed providers, got %#v", got)
 	}
 }
