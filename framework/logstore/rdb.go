@@ -122,6 +122,8 @@ func teamOrBUFanoutFrom(idCol string) (string, bool) {
 		arrIDs, arrNames, scalarName = "team_ids", "team_names", "team_name"
 	case "business_unit_id":
 		arrIDs, arrNames, scalarName = "business_unit_ids", "business_unit_names", "business_unit_name"
+	case "customer_id":
+		arrIDs, arrNames, scalarName = "customer_ids", "customer_names", "customer_name"
 	default:
 		return "", false
 	}
@@ -184,7 +186,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		}
 	}
 	if len(filters.CustomerIDs) > 0 {
-		baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
+		if s.db.Dialector.Name() == "postgres" {
+			sql, args := multiValueDimensionFilterSQL("customer_id", "customer_ids", filters.CustomerIDs)
+			baseQuery = baseQuery.Where(sql, args...)
+		} else {
+			baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
+		}
 	}
 	if len(filters.UserIDs) > 0 {
 		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
