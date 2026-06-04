@@ -13,6 +13,10 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+const uiDevServerAddr = "localhost:3000"
+
+var uiDevClient = &fasthttp.HostClient{Addr: uiDevServerAddr}
+
 // UIHandler handles UI routes.
 type UIHandler struct {
 	uiContent embed.FS
@@ -31,8 +35,12 @@ func (h *UIHandler) RegisterRoutes(router *router.Router, middlewares ...schemas
 	router.GET("/{filepath:*}", lib.ChainMiddlewares(h.serveDashboard, middlewares...))
 }
 
-// ServeDashboard serves the dashboard UI.
+// serveDashboard serves the dashboard UI.
 func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
+	if IsDevMode() && h.serveDevDashboard(ctx) {
+		return
+	}
+
 	// Get the request path
 	requestPath := string(ctx.Path())
 
@@ -133,4 +141,21 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 
 	// Send the file content
 	ctx.SetBody(data)
+}
+
+// serveDevDashboard proxies dashboard requests to the local Vite dev server.
+func (h *UIHandler) serveDevDashboard(ctx *fasthttp.RequestCtx) bool {
+	var req fasthttp.Request
+	var resp fasthttp.Response
+	ctx.Request.CopyTo(&req)
+	req.URI().SetScheme("http")
+	req.URI().SetHost(uiDevServerAddr)
+	req.Header.SetHost(uiDevServerAddr)
+
+	if err := uiDevClient.Do(&req, &resp); err != nil {
+		return false
+	}
+
+	resp.CopyTo(&ctx.Response)
+	return true
 }
