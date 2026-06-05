@@ -65,6 +65,8 @@ const (
 	filterDimRoutingRules   = "routing_rules"
 	filterDimRoutingEngines = "routing_engines"
 	filterDimStopReasons    = "stop_reasons"
+	filterDimApps           = "apps"
+	filterDimUserAgents     = "user_agents"
 	filterDimTeams          = "teams"
 	filterDimCustomers      = "customers"
 	filterDimUsers          = "users"
@@ -76,18 +78,20 @@ const (
 const (
 	mcpFilterDimToolNames    = "tool_names"
 	mcpFilterDimServerLabels = "server_labels"
+	mcpFilterDimApps         = "apps"
+	mcpFilterDimUserAgents   = "user_agents"
 	mcpFilterDimVirtualKeys  = "virtual_keys"
 )
 
 var allFilterDimensions = []string{
 	filterDimModels, filterDimAliases, filterDimSelectedKeys, filterDimVirtualKeys,
-	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons,
-	filterDimTeams, filterDimCustomers, filterDimUsers, filterDimBusinessUnits,
-	filterDimMetadataKeys,
+	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons, filterDimApps,
+	filterDimUserAgents, filterDimTeams, filterDimCustomers, filterDimUsers,
+	filterDimBusinessUnits, filterDimMetadataKeys,
 }
 
 var allMCPFilterDimensions = []string{
-	mcpFilterDimToolNames, mcpFilterDimServerLabels, mcpFilterDimVirtualKeys,
+	mcpFilterDimToolNames, mcpFilterDimServerLabels, mcpFilterDimApps, mcpFilterDimUserAgents, mcpFilterDimVirtualKeys,
 }
 
 // parseFilterDimensions returns the requested subset of dimensions in a
@@ -428,6 +432,12 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
+		filters.UserAgents = parseCommaSeparated(userAgents)
+	}
+	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
+		filters.Apps = parseCommaSeparated(apps)
+	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t
@@ -669,6 +679,12 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
 	}
+	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
+		filters.UserAgents = parseCommaSeparated(userAgents)
+	}
+	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
+		filters.Apps = parseCommaSeparated(apps)
+	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t
@@ -827,6 +843,12 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	}
 	if stopReasons := string(ctx.QueryArgs().Peek("stop_reasons")); stopReasons != "" {
 		filters.StopReasons = parseCommaSeparated(stopReasons)
+	}
+	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
+		filters.UserAgents = parseCommaSeparated(userAgents)
+	}
+	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
+		filters.Apps = parseCommaSeparated(apps)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
@@ -1145,6 +1167,8 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		routingRules   []logging.KeyPair
 		routingEngines []string
 		stopReasons    []string
+		apps           []string
+		userAgents     []string
 		teams          []logging.KeyPair
 		customers      []logging.KeyPair
 		users          []logging.KeyPair
@@ -1238,6 +1262,30 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 			}
 			mu.Lock()
 			stopReasons = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimApps]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableApps(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			apps = result
+			mu.Unlock()
+			return nil
+		})
+	}
+	if _, ok := want[filterDimUserAgents]; ok {
+		g.Go(func() error {
+			result, err := h.logManager.GetAvailableUserAgents(gCtx, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			userAgents = result
 			mu.Unlock()
 			return nil
 		})
@@ -1415,6 +1463,12 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimStopReasons]; ok {
 		payload[filterDimStopReasons] = stopReasons
+	}
+	if _, ok := want[filterDimApps]; ok {
+		payload[filterDimApps] = apps
+	}
+	if _, ok := want[filterDimUserAgents]; ok {
+		payload[filterDimUserAgents] = userAgents
 	}
 	if _, ok := want[filterDimTeams]; ok {
 		payload[filterDimTeams] = teams
@@ -1657,6 +1711,12 @@ func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLo
 	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
 		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
 	}
+	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
+		filters.UserAgents = parseCommaSeparated(userAgents)
+	}
+	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
+		filters.Apps = parseCommaSeparated(apps)
+	}
 	var startTimeErr, endTimeErr error
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		t, err := time.Parse(time.RFC3339Nano, startTime)
@@ -1776,6 +1836,12 @@ func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilter
 	}
 	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
 		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
+	}
+	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
+		filters.UserAgents = parseCommaSeparated(userAgents)
+	}
+	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
+		filters.Apps = parseCommaSeparated(apps)
 	}
 	var timeParseErr error
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
@@ -1968,6 +2034,28 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	var apps []string
+	if _, ok := want[mcpFilterDimApps]; ok {
+		var err error
+		apps, err = h.logManager.GetAvailableMCPApps(ctx, defaultFilterDataLimit, query)
+		if err != nil {
+			logger.Error("failed to get available MCP apps: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available MCP apps: %v", err))
+			return
+		}
+	}
+
+	var userAgents []string
+	if _, ok := want[mcpFilterDimUserAgents]; ok {
+		var err error
+		userAgents, err = h.logManager.GetAvailableMCPUserAgents(ctx, defaultFilterDataLimit, query)
+		if err != nil {
+			logger.Error("failed to get available MCP user agents: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available MCP user agents: %v", err))
+			return
+		}
+	}
+
 	var virtualKeysArray []tables.TableVirtualKey
 	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
 		virtualKeys, err := h.logManager.GetAvailableMCPVirtualKeys(ctx, defaultFilterDataLimit, query)
@@ -2011,6 +2099,12 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[mcpFilterDimServerLabels]; ok {
 		payload[mcpFilterDimServerLabels] = serverLabels
+	}
+	if _, ok := want[mcpFilterDimApps]; ok {
+		payload[mcpFilterDimApps] = apps
+	}
+	if _, ok := want[mcpFilterDimUserAgents]; ok {
+		payload[mcpFilterDimUserAgents] = userAgents
 	}
 	if _, ok := want[mcpFilterDimVirtualKeys]; ok {
 		payload[mcpFilterDimVirtualKeys] = virtualKeysArray

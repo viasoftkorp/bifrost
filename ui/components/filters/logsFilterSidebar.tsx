@@ -111,6 +111,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<SelectedKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<ProvidersFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<AppFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<TypeFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<AliasesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RoutingEnginesFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -418,6 +419,50 @@ function StopReasonFilter({ filters, onFiltersChange, defaultOpen }: FilterCompo
 				onSearch={setSearchQuery}
 				fetching={isFetching}
 				testIdPrefix="stop-reason-filter"
+			/>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// AppFilter
+// ---------------------------------------------------------------------------
+
+function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = (filters.apps || []).length > 0;
+	const [opened, setOpened] = useState(defaultOpen || hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const {
+		data: filterData,
+		isUninitialized,
+		isLoading,
+	} = useGetAvailableFilterDataQuery({ dimensions: ["apps"] }, { skip: !opened && !hasActive });
+	const availableApps = useMemo(() => (filterData?.apps as string[] | undefined) || [], [filterData]);
+	const items = useMemo(() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })), [availableApps, filters.apps]);
+
+	if (!isUninitialized && !isLoading && availableApps.length === 0 && !hasActive && !opened) return null;
+
+	const selectedSet = new Set(filters.apps || []);
+
+	return (
+		<FilterSection
+			title="App"
+			defaultOpen={defaultOpen || hasActive}
+			loading={isLoading}
+			onOpenChange={setOpened}
+			testId="app-filter-toggle"
+		>
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search apps"
+				items={items}
+				isSelected={(appName) => selectedSet.has(appName)}
+				onToggle={(appName) => {
+					const current = filters.apps || [];
+					const next = current.includes(appName) ? current.filter((app) => app !== appName) : [...current, appName];
+					onFiltersChange({ ...filters, apps: next.length > 0 ? next : undefined });
+				}}
+				testIdPrefix="app-filter"
 			/>
 		</FilterSection>
 	);

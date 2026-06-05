@@ -421,6 +421,8 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 	if len(pending.RoutingEnginesUsed) > 0 {
 		entry.RoutingEnginesUsed = pending.RoutingEnginesUsed
 	}
+	applyUserAgent(entry, pending.InitialData.UserAgent)
+	applyApp(entry, pending.InitialData.App)
 	return entry
 }
 
@@ -456,7 +458,29 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 	if len(pending.RoutingEnginesUsed) > 0 {
 		entry.RoutingEnginesUsed = pending.RoutingEnginesUsed
 	}
+	applyUserAgent(entry, pending.InitialData.UserAgent)
+	applyApp(entry, pending.InitialData.App)
 	return entry
+}
+
+func applyUserAgent(entry *logstore.Log, userAgent string) {
+	if userAgent == "" {
+		return
+	}
+	ua := userAgent
+	entry.UserAgent = &ua
+	if entry.App == nil {
+		if app := schemas.DetectAppFromUserAgent(userAgent); app != "" {
+			entry.App = &app
+		}
+	}
+}
+
+func applyApp(entry *logstore.Log, app string) {
+	if app == "" {
+		return
+	}
+	entry.App = &app
 }
 
 // applyModelAlias sets entry.Model to resolvedModel (falling back to requestedModel if empty)
