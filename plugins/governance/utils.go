@@ -195,3 +195,43 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 
 	return filteredModels
 }
+
+// isListModelsRequest reports whether ctx carries the ListModelsRequest type,
+// set upstream by RegisterRequestTypeMiddleware from the route path mapping.
+func isListModelsRequest(ctx *schemas.BifrostContext) bool {
+	requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
+	return requestType == schemas.ListModelsRequest
+}
+
+// applyListModelsVirtualKeyProviderFilter scopes the GET /v1/models provider fan-out
+// to the providers the virtual key permits. It resolves the VK from the in-memory
+// governance store and writes the allowed providers to BifrostContextKeyAvailableProviders,
+// which core.ListAllModels reads to narrow the fan-out. Without this, ListAllModels asks
+// every configured provider to list models and governance rejects providers outside the
+// VK, creating noisy, expected errors in request logs.
+func (p *GovernancePlugin) applyListModelsVirtualKeyProviderFilter(ctx *schemas.BifrostContext, virtualKeyValue string) {
+	trimmedVKValue := strings.TrimSpace(virtualKeyValue)
+	if trimmedVKValue == "" {
+		return
+	}
+
+	vk, ok := p.store.GetVirtualKey(ctx, trimmedVKValue)
+	if !ok || vk == nil || !vk.IsActiveValue() {
+		return
+	}
+
+	availableProviders := make([]schemas.ModelProvider, 0, len(vk.ProviderConfigs))
+	for _, providerConfig := range vk.ProviderConfigs {
+		provider := strings.TrimSpace(providerConfig.Provider)
+		if provider == "" {
+			continue
+		}
+		availableProviders = append(availableProviders, schemas.ModelProvider(provider))
+	}
+
+	if len(vk.ProviderConfigs) > 0 && len(availableProviders) == 0 {
+		p.logger.Warn("[Governance] virtual key %q has provider configs but none resolve to a valid provider; list models will return no results", vk.Name)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
+}

@@ -151,6 +151,118 @@ func TestHTTPTransportPreHook_ModelOnlyVirtualKeySetsEmptyAvailableProvidersWhen
 	require.Empty(t, allowedProviders)
 }
 
+// TestHTTPTransportPreHook_ListAllModelsScopesProvidersToVirtualKey verifies that a
+// bodyless GET /v1/models with a virtual key sets BifrostContextKeyAvailableProviders
+// to the VK's configured providers, so core.ListAllModels only fans out to those.
+func TestHTTPTransportPreHook_ListAllModelsScopesProvidersToVirtualKey(t *testing.T) {
+	logger := NewMockLogger()
+
+	virtualKey := buildVirtualKeyWithProviders(
+		"vk-list-models",
+		"sk-bf-list-models",
+		"list-models-vk",
+		[]configstoreTables.TableVirtualKeyProviderConfig{
+			buildProviderConfig("openai", []string{"*"}),
+			buildProviderConfig("anthropic", []string{"*"}),
+		},
+	)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*virtualKey},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, plugin.Cleanup())
+	}()
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	req.Method = "GET"
+	req.Path = "/v1/models"
+	req.Headers["Authorization"] = "Bearer sk-bf-list-models"
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ListModelsRequest)
+	resp, err := plugin.HTTPTransportPreHook(bfCtx, req)
+	require.NoError(t, err)
+	require.Nil(t, resp)
+
+	allowedProviders, ok := bfCtx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+	require.True(t, ok, "list models should scope available providers to the VK")
+	require.Equal(t, []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic}, allowedProviders)
+}
+
+// TestHTTPTransportPreHook_ListAllModelsInactiveVirtualKeySkipsScoping verifies that an
+// inactive VK is ignored: no provider scoping is applied so the call is not silently
+// reduced to zero models by an unrelated deny-all.
+func TestHTTPTransportPreHook_ListAllModelsInactiveVirtualKeySkipsScoping(t *testing.T) {
+	logger := NewMockLogger()
+
+	virtualKey := buildVirtualKey("vk-list-models-inactive", "sk-bf-list-models-inactive", "list-models-inactive-vk", false)
+	virtualKey.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*virtualKey},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, plugin.Cleanup())
+	}()
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	req.Method = "GET"
+	req.Path = "/v1/models"
+	req.Headers["Authorization"] = "Bearer sk-bf-list-models-inactive"
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ListModelsRequest)
+	resp, err := plugin.HTTPTransportPreHook(bfCtx, req)
+	require.NoError(t, err)
+	require.Nil(t, resp)
+
+	require.Nil(t, bfCtx.Value(schemas.BifrostContextKeyAvailableProviders),
+		"inactive VK must not set available providers")
+}
+
+// TestHTTPTransportPreHook_ListAllModelsUnknownVirtualKeySkipsScoping verifies that a bearer
+// token absent from the governance store does not set BifrostContextKeyAvailableProviders,
+// so ListAllModels fans out to all configured providers (fail-open) rather than returning
+// zero results.
+func TestHTTPTransportPreHook_ListAllModelsUnknownVirtualKeySkipsScoping(t *testing.T) {
+	logger := NewMockLogger()
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, plugin.Cleanup())
+	}()
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	req.Method = "GET"
+	req.Path = "/v1/models"
+	req.Headers["Authorization"] = "Bearer sk-bf-not-in-store"
+
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ListModelsRequest)
+	resp, err := plugin.HTTPTransportPreHook(bfCtx, req)
+	require.NoError(t, err)
+	require.Nil(t, resp)
+
+	require.Nil(t, bfCtx.Value(schemas.BifrostContextKeyAvailableProviders),
+		"unknown VK must not set available providers — fan out to all providers")
+}
+
 // TestHTTPTransportPreHook_GenAIRoutingRulePreservesTarget verifies that when a routing rule
 // matches on the /genai path, governance load balancing does not override the routing-rule target
 // with a provider from the VK pool (regression test for issue #2516).

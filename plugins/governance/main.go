@@ -370,6 +370,10 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		if modelParam := realtimeModelQueryParam(req); modelParam != "" {
 			return p.governRealtimeQueryParam(ctx, req, virtualKeyValue, hasRoutingRules)
 		}
+		if virtualKeyValue != nil && isListModelsRequest(ctx) {
+			p.applyListModelsVirtualKeyProviderFilter(ctx, *virtualKeyValue)
+			return nil, nil
+		}
 		isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
 		if !isLargePayload {
 			return nil, nil
