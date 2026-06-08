@@ -96,6 +96,29 @@ func TestUserAgentFromContextFallsBackToUserAgentKey(t *testing.T) {
 	}
 }
 
+func TestCustomUserAgentMappingOverridesBuiltInDetection(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close(context.Background())
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	_, err = plugin.CreateUserAgentMapping(context.Background(), &logstore.UserAgentMapping{
+		Pattern:   `claude-cli/\d+\.\d+`,
+		MatchType: string(schemas.UserAgentMappingMatchTypeRegex),
+		App:       "Internal Claude Wrapper",
+		IsActive:  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUserAgentMapping() error = %v", err)
+	}
+
+	if got := plugin.detectAppFromUserAgent("claude-cli/2.1.168 (external, cli)"); got != "Internal Claude Wrapper" {
+		t.Fatalf("expected custom app mapping, got %q", got)
+	}
+}
+
 func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	store := newTestStore(t)
 	loggingHeaders := []string{"x-custom-log"}

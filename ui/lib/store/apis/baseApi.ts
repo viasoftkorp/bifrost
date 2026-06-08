@@ -190,6 +190,8 @@ export const baseApi = createApi({
 		"MCPLibrary",
 		"FeatureFlags",
 		"ComplexityAnalyzerConfig",
+		"FeatureFlags",
+		"UserAgentMappings",
 		"Devices",
 		"EdgeApps",
 		"EdgeMCPServers",

@@ -164,6 +164,11 @@ type LogManager interface {
 
 	// DeleteMCPToolLogs deletes multiple MCP tool log entries by their IDs
 	DeleteMCPToolLogs(ctx context.Context, ids []string) error
+
+	ListUserAgentMappings(ctx context.Context) ([]logstore.UserAgentMapping, error)
+	CreateUserAgentMapping(ctx context.Context, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error)
+	UpdateUserAgentMapping(ctx context.Context, id string, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error)
+	DeleteUserAgentMapping(ctx context.Context, id string) error
 }
 
 // PluginLogManager implements LogManager interface wrapping the plugin
@@ -484,6 +489,26 @@ func (p *PluginLogManager) DeleteMCPToolLogs(ctx context.Context, ids []string) 
 		return fmt.Errorf("log store not initialized")
 	}
 	return p.plugin.store.DeleteMCPToolLogs(ctx, ids)
+}
+
+// ListUserAgentMappings returns all custom User-Agent mappings.
+func (p *PluginLogManager) ListUserAgentMappings(ctx context.Context) ([]logstore.UserAgentMapping, error) {
+	return p.plugin.ListUserAgentMappings(ctx)
+}
+
+// CreateUserAgentMapping creates a custom User-Agent mapping through the logging plugin.
+func (p *PluginLogManager) CreateUserAgentMapping(ctx context.Context, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error) {
+	return p.plugin.CreateUserAgentMapping(ctx, mapping)
+}
+
+// UpdateUserAgentMapping updates a custom User-Agent mapping through the logging plugin.
+func (p *PluginLogManager) UpdateUserAgentMapping(ctx context.Context, id string, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error) {
+	return p.plugin.UpdateUserAgentMapping(ctx, id, mapping)
+}
+
+// DeleteUserAgentMapping deletes a custom User-Agent mapping through the logging plugin.
+func (p *PluginLogManager) DeleteUserAgentMapping(ctx context.Context, id string) error {
+	return p.plugin.DeleteUserAgentMapping(ctx, id)
 }
 
 // GetPluginLogManager returns a LogManager interface for this plugin

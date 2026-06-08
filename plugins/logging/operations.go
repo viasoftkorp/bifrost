@@ -4,10 +4,12 @@ package logging
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -59,7 +61,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		ua := data.UserAgent
 		entry.UserAgent = &ua
 		if data.App == "" {
-			data.App = schemas.DetectAppFromUserAgent(data.UserAgent)
+			data.App = p.detectAppFromUserAgent(data.UserAgent)
 		}
 	}
 	if data.App != "" {
@@ -1184,6 +1186,83 @@ func (p *LoggerPlugin) GetAvailableApps(ctx context.Context, limit int, query st
 		return nil, fmt.Errorf("failed to get available apps: %w", err)
 	}
 	return apps, nil
+}
+
+func validateUserAgentMapping(mapping *logstore.UserAgentMapping) error {
+	mapping.Pattern = strings.TrimSpace(mapping.Pattern)
+	mapping.App = strings.TrimSpace(mapping.App)
+	mapping.MatchType = strings.TrimSpace(mapping.MatchType)
+	if mapping.Pattern == "" {
+		return fmt.Errorf("pattern cannot be empty")
+	}
+	if mapping.App == "" {
+		return fmt.Errorf("app cannot be empty")
+	}
+	switch schemas.UserAgentMappingMatchType(mapping.MatchType) {
+	case schemas.UserAgentMappingMatchTypeContains,
+		schemas.UserAgentMappingMatchTypeStartsWith,
+		schemas.UserAgentMappingMatchTypeExact:
+	case schemas.UserAgentMappingMatchTypeRegex:
+		if _, err := regexp.Compile(mapping.Pattern); err != nil {
+			return fmt.Errorf("invalid regex pattern: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported match_type %q", mapping.MatchType)
+	}
+	return nil
+}
+
+// ListUserAgentMappings returns all custom User-Agent mappings.
+func (p *LoggerPlugin) ListUserAgentMappings(ctx context.Context) ([]logstore.UserAgentMapping, error) {
+	return p.store.ListUserAgentMappings(ctx, false)
+}
+
+// CreateUserAgentMapping validates, stores, and activates a custom User-Agent mapping.
+func (p *LoggerPlugin) CreateUserAgentMapping(ctx context.Context, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error) {
+	if err := validateUserAgentMapping(mapping); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	mapping.ID = uuid.NewString()
+	mapping.CreatedAt = now
+	mapping.UpdatedAt = now
+	if err := p.store.CreateUserAgentMapping(ctx, mapping); err != nil {
+		return nil, err
+	}
+	if err := p.ReloadUserAgentMappings(ctx); err != nil {
+		return nil, err
+	}
+	return mapping, nil
+}
+
+// UpdateUserAgentMapping validates, stores, and activates changes to a custom User-Agent mapping.
+func (p *LoggerPlugin) UpdateUserAgentMapping(ctx context.Context, id string, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id cannot be empty")
+	}
+	if err := validateUserAgentMapping(mapping); err != nil {
+		return nil, err
+	}
+	mapping.UpdatedAt = time.Now().UTC()
+	if err := p.store.UpdateUserAgentMapping(ctx, id, mapping); err != nil {
+		return nil, err
+	}
+	if err := p.ReloadUserAgentMappings(ctx); err != nil {
+		return nil, err
+	}
+	mapping.ID = id
+	return mapping, nil
+}
+
+// DeleteUserAgentMapping removes a custom User-Agent mapping and refreshes the matcher cache.
+func (p *LoggerPlugin) DeleteUserAgentMapping(ctx context.Context, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("id cannot be empty")
+	}
+	if err := p.store.DeleteUserAgentMapping(ctx, id); err != nil {
+		return err
+	}
+	return p.ReloadUserAgentMappings(ctx)
 }
 
 // keyPairResultsToKeyPairs converts logstore.KeyPairResult slice to KeyPair slice
