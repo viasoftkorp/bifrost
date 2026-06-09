@@ -317,7 +317,27 @@
         "groups": [
           {
             "group": "Overview",
-            "pages": ["edge/overview"]
+            "pages": ["edge/overview", "edge/how-it-works"]
+          },
+          {
+            "group": "Governance & Control",
+            "icon": "shield-halved",
+            "pages": ["edge/app-governance", "edge/mcp-governance", "edge/security"]
+          },
+          {
+            "group": "Admin controls",
+            "icon": "sliders",
+            "pages": ["edge/admin-devices", "edge/admin-approvals", "edge/admin-configurations"]
+          },
+          {
+            "group": "Deployment",
+            "icon": "cloud-arrow-up",
+            "pages": ["edge/deployment-mdm"]
+          },
+          {
+            "group": "Reference",
+            "icon": "list",
+            "pages": ["edge/supported-applications"]
           }
         ]
       },
