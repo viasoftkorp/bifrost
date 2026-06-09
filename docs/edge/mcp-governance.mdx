@@ -30,6 +30,10 @@ Edge reads the MCP configuration of supported AI apps on each machine and builds
   </Card>
 </CardGroup>
 
+## Approval workflow
+
+If Bifrost edge detects a new app or MCP server, it will automatically request approval from the admin console. In the settings, you can configure if apps or MCP servers should be allowed or blocked when they are in pending state.
+
 ## Enforced on the device
 
 Allowing or denying an MCP server is not just advisory. When you deny a server, Edge enforces that decision directly on each machine so the disallowed tool cannot be used, even by an app that had it configured before the policy existed.

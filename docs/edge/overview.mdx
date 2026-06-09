@@ -4,7 +4,11 @@ description: "Governance for AI on every machine. Bifrost Edge runs on every com
 icon: "globe"
 ---
 
-<Note>
+<Frame>
+<img src="/media/edge/edge-hero.png" alt="Bifrost edge"/>
+</Frame>
+
+<Tip>
 **Bifrost Edge is in alpha.** Be among the first to bring AI on every computer of your organization under governance. Register below and our team will reach out to onboard you.
 
 <button
@@ -13,14 +17,14 @@ icon: "globe"
   data-tally-width="700"
   data-tally-hide-title="1"
   data-tally-transparent-background="1"
-  className="not-prose mt-4 inline-flex cursor-pointer items-center gap-2 rounded-lg border-0 bg-[rgb(var(--primary-dark))] px-5 py-2.5 text-sm font-semibold text-white no-underline transition-opacity hover:opacity-90"
+  className="not-prose mt-2 inline-flex cursor-pointer items-center gap-2 rounded-lg border-0 bg-[rgb(var(--primary-dark))] px-5 py-2.5 text-sm font-semibold text-white no-underline transition-opacity hover:opacity-90"
 >
   Register for Alpha
   <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 </button>
-</Note>
+</Tip>
 
 ---
 
@@ -30,7 +34,7 @@ Bifrost Edge extends your AI gateway all the way to the endpoint. Instead of rel
 flowchart LR
     subgraph Laptop["Every computer in your organization"]
         Apps["AI apps and surfaces<br/>Claude Desktop and Claude Code<br/>ChatGPT app and ChatGPT web<br/>Codex, Cursor, Gemini<br/>MCP servers in each app"]
-        Edge["Bifrost Edge agent<br/>menu-bar, always-on<br/>routes all AI traffic<br/>enforces app and MCP policy"]
+        Edge["Bifrost Edge"]
         Apps --> Edge
     end
 
