@@ -18,7 +18,7 @@ flowchart LR
 Edge reads the MCP configuration of supported AI apps on each machine and builds a live inventory: which servers are configured, where, and across how many devices. For the first time you can answer "what MCP servers are running on our fleet?" with real data instead of guesswork.
 
 <Frame>
-  <img src="/media/edge/mcp-inventory.png" alt="Fleet-wide MCP server inventory in Bifrost" />
+  <img src="/media/edge/edge-mcp-approval-screen.png" alt="Fleet-wide MCP server inventory in Bifrost" />
 </Frame>
 
 <CardGroup cols={2}>
@@ -39,7 +39,7 @@ If Bifrost edge detects a new app or MCP server, it will automatically request a
 Allowing or denying an MCP server is not just advisory. When you deny a server, Edge enforces that decision directly on each machine so the disallowed tool cannot be used, even by an app that had it configured before the policy existed.
 
 <Frame>
-  <img src="/media/edge/mcp-allow-deny.png" alt="Allowing and denying MCP servers across the fleet" />
+  <img src="/media/edge/edge-guardrails-mcp.png" alt="Allowing and denying MCP servers across the fleet" />
 </Frame>
 
 <Note>
