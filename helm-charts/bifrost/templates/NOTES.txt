@@ -1,10 +1,22 @@
 Bifrost has been installed!
 
-{{- if .Values.ingress.enabled }}
+{{- if and .Values.ingress (hasKey .Values.ingress "enabled") .Values.ingress.enabled }}
 
 1. Access Bifrost at:
 {{- range .Values.ingress.hosts }}
    http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+
+{{- else if and .Values.ingress (not (hasKey .Values.ingress "enabled")) }}
+
+1. Access Bifrost at:
+{{- range (keys .Values.ingress | sortAlpha) }}
+{{- $ing := index $.Values.ingress . }}
+{{- if $ing.enabled }}
+{{- range $ing.hosts }}
+   http{{ if $ing.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{- else if eq .Values.service.type "LoadBalancer" }}
