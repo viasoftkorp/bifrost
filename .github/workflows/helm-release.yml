@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   release:
@@ -22,8 +23,11 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             api.github.com:443
+            auth.docker.io:443
             get.helm.sh:443
+            ghcr.io:443
             github.com:443
+            registry-1.docker.io:443
             maximhq.github.io:443
             proxy.golang.org:443
             release-assets.githubusercontent.com:443
@@ -92,6 +96,26 @@ jobs:
         run: |
           cd helm-charts
           helm package bifrost
+
+      - name: Login to GitHub Container Registry
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
+
+      - name: Login to Docker Hub
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | helm registry login registry-1.docker.io --username ${{ secrets.DOCKER_USERNAME }} --password-stdin
+
+      - name: Push Helm chart as OCI artifact to GHCR
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          helm push helm-charts/bifrost-${{ steps.chart-version.outputs.version }}.tgz oci://ghcr.io/maximhq/helm-charts
+
+      - name: Push Helm chart as OCI artifact to Docker Hub
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          helm push helm-charts/bifrost-${{ steps.chart-version.outputs.version }}.tgz oci://registry-1.docker.io/maximhq/helm-charts
 
       - name: Create GitHub Release
         if: steps.check-release.outputs.exists == 'false'
