@@ -336,6 +336,12 @@ false
 {{- $_ := set $framework "pricing" $pricing }}
 {{- end }}
 {{- end }}
+{{- if .Values.bifrost.framework.mcpLibraryUrl }}
+{{- $_ := set $framework "mcp_library_url" .Values.bifrost.framework.mcpLibraryUrl }}
+{{- end }}
+{{- if .Values.bifrost.framework.mcpLibrarySyncInterval }}
+{{- $_ := set $framework "mcp_library_sync_interval" .Values.bifrost.framework.mcpLibrarySyncInterval }}
+{{- end }}
 {{- if $framework }}
 {{- $_ := set $config "framework" $framework }}
 {{- end }}
