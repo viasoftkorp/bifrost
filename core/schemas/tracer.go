@@ -123,6 +123,9 @@ type Tracer interface {
 	// Thread-safe. Should be called after plugin hooks complete, before trace completion.
 	AttachPluginLogs(traceID string, logs []PluginLogEntry)
 
+	// SetTraceRedactionReplacements stores connector-facing raw-to-placeholder replacements on a trace.
+	SetTraceRedactionReplacements(traceID string, replacements map[string]string)
+
 	// CompleteAndFlushTrace ends a trace, exports it to observability plugins, and
 	// releases the trace resources. Used by transports that bypass normal HTTP trace completion.
 	CompleteAndFlushTrace(traceID string)
@@ -197,6 +200,9 @@ func (n *NoOpTracer) ProcessStreamingChunk(_ *BifrostContext, _ string, _ bool, 
 
 // AttachPluginLogs does nothing.
 func (n *NoOpTracer) AttachPluginLogs(_ string, _ []PluginLogEntry) {}
+
+// SetTraceRedactionReplacements does nothing.
+func (n *NoOpTracer) SetTraceRedactionReplacements(_ string, _ map[string]string) {}
 
 // CompleteAndFlushTrace does nothing.
 func (n *NoOpTracer) CompleteAndFlushTrace(_ string) {}
