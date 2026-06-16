@@ -318,6 +318,16 @@
                   "integrations/guardrails/patronus-ai"
                 ]
               },
+              {
+                "group": "Alerting",
+                "icon": "bell",
+                "pages": [
+                  "enterprise/alerting/overview",
+                  "enterprise/alerting/alert-rules",
+                  "enterprise/alerting/alert-channels",
+                  "enterprise/alerting/alert-history"
+                ]
+              },
               "enterprise/audit-logs",
               "enterprise/log-exports",
               "enterprise/datadog-connector",
