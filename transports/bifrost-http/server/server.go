@@ -160,6 +160,7 @@ type BifrostHTTPServer struct {
 	WSTicketStore        *handlers.WSTicketStore
 	TempTokens           *temptoken.Service
 	TempTokenSweepWorker *temptoken.SweepWorker
+	OAuth2ConsentHandler *handlers.OAuth2ConsentHandler
 
 	wsPool *bfws.Pool
 }
@@ -1396,6 +1397,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// Going ahead with API handlers
 	handlers.NewOAuth2DiscoveryHandler(s.Config).RegisterRoutes(s.Router, middlewares...)
 	handlers.NewOAuth2IssuanceHandler(s.Config, s.TempTokens).RegisterRoutes(s.Router)
+	if s.OAuth2ConsentHandler == nil {
+		s.OAuth2ConsentHandler = handlers.NewOAuth2ConsentHandler(s.Config, s.TempTokens, nil)
+	}
+	s.OAuth2ConsentHandler.RegisterRoutes(s.Router, middlewares...)
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
