@@ -3045,6 +3045,9 @@ func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvid
 			}
 		})
 	}
+	if got := ctx.Value(schemas.BifrostContextKeyRawStreamTextCodec); got != nil {
+		t.Fatalf("raw stream text codec = %v, want nil", got)
+	}
 }
 
 // Test that releaseChannelMessage clears all request-scoped references so an
