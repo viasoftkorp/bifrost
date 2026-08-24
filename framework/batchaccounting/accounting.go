@@ -945,6 +945,7 @@ func buildAggregateLog(req Request, summary *Summary, now time.Time) *logstore.L
 		TotalTokens:      summary.Usage.TotalTokens,
 		CreatedAt:        now,
 		BatchDebugParsed: batchDebug,
+		UserAgent:        new("bifrost"),
 	}
 	// Attribution must not depend on who happens to settle the batch first. The
 	// sweeper reaches here with only the job; a /results call reaches here with the
