@@ -1439,7 +1439,7 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 
 	mcpPermits = AppendMCPPermitsAllowedByDefault(mcpPermits, configured, allowedByDefaultClients)
 
-	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits)
+	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits, grant.WithAllowAllProviders(vk.AllowAllProviders))
 }
 
 // AppendMCPPermitsAllowedByDefault adds a permit for every client allowed by default that the holder

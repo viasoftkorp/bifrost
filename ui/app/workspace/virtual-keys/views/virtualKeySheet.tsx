@@ -154,6 +154,8 @@ const formSchema = z
 		name: z.string().min(1, "Virtual key name is required"),
 		description: z.string().optional(),
 		providerConfigs: z.array(providerConfigSchema).optional(),
+		// When true, all providers are allowed; providerConfigs remain optional per-provider overrides.
+		allowAllProviders: z.boolean(),
 		mcpConfigs: z.array(mcpConfigSchema).optional(),
 		entityType: z.enum(["team", "customer", "user", "none"]),
 		teamId: z.string().optional(),
@@ -393,11 +395,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					})),
 					rate_limit: config.rate_limit
 						? {
-							token_max_limit: config.rate_limit.token_max_limit ?? undefined,
-							token_reset_duration: config.rate_limit.token_reset_duration,
-							request_max_limit: config.rate_limit.request_max_limit ?? undefined,
-							request_reset_duration: config.rate_limit.request_reset_duration,
-						}
+								token_max_limit: config.rate_limit.token_max_limit ?? undefined,
+								token_reset_duration: config.rate_limit.token_reset_duration,
+								request_max_limit: config.rate_limit.request_max_limit ?? undefined,
+								request_reset_duration: config.rate_limit.request_reset_duration,
+							}
 						: undefined,
 					model_budgets: config.model_budgets?.map((mb) => ({
 						model_name: mb.model_name,
@@ -409,14 +411,15 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						})),
 						rate_limit: mb.rate_limit
 							? {
-								token_max_limit: mb.rate_limit.token_max_limit ?? undefined,
-								token_reset_duration: mb.rate_limit.token_reset_duration,
-								request_max_limit: mb.rate_limit.request_max_limit ?? undefined,
-								request_reset_duration: mb.rate_limit.request_reset_duration,
-							}
+									token_max_limit: mb.rate_limit.token_max_limit ?? undefined,
+									token_reset_duration: mb.rate_limit.token_reset_duration,
+									request_max_limit: mb.rate_limit.request_max_limit ?? undefined,
+									request_reset_duration: mb.rate_limit.request_reset_duration,
+								}
 							: undefined,
 					})),
 				})) || [],
+			allowAllProviders: virtualKey?.allow_all_providers ?? false,
 			mcpConfigs:
 				virtualKey?.mcp_configs?.map((config) => ({
 					id: config.id,
@@ -431,18 +434,18 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			isActive: virtualKey?.is_active ?? true,
 			expiresAt: virtualKey?.expires_at
 				? (() => {
-					const d = new Date(virtualKey.expires_at);
-					return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-				})()
+						const d = new Date(virtualKey.expires_at);
+						return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+					})()
 				: null,
 			budgets:
 				virtualKey?.budgets && virtualKey.budgets.length > 0
 					? virtualKey.budgets.map((b) => ({
-						id: b.id,
-						max_limit: b.max_limit,
-						reset_duration: b.reset_duration ?? "1M",
-						reset_config: b.reset_config,
-					}))
+							id: b.id,
+							max_limit: b.max_limit,
+							reset_duration: b.reset_duration ?? "1M",
+							reset_config: b.reset_config,
+						}))
 					: [],
 			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
 			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ?? undefined,
@@ -513,6 +516,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	// Get current provider configs from form
 	const providerConfigs = form.watch("providerConfigs") || [];
 
+	// Whether "Allow all providers" is on
+	const allowAllProviders = form.watch("allowAllProviders");
+
 	// Get current MCP configs from form
 	const mcpConfigs = form.watch("mcpConfigs") || [];
 
@@ -537,6 +543,28 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			supportsCalendarAlignment(watchedRequestResetDuration || "1h"));
 	const showCalendarAlignToggle = hasAnyAlignableBudget || hasAnyAlignableRateLimit;
 
+	// Build a default provider config row (all models, all keys, no limits)
+	const makeDefaultProviderConfig = (provider: string) => ({
+		provider: provider,
+		weight: undefined as number | undefined, // undefined = excluded from weighted routing until user sets a weight
+		allowed_models: ["*"],
+		blacklisted_models: [] as string[],
+		key_ids: ["*"],
+	});
+
+	// A row is "untouched" if it still carries only the auto-added defaults (no budget/limit/restriction).
+	// Turning "Allow all providers" off keeps customized rows and drops these.
+	const isDefaultProviderConfig = (config: (typeof providerConfigs)[number]) =>
+		(config.allowed_models || []).length === 1 &&
+		config.allowed_models?.[0] === "*" &&
+		(config.blacklisted_models || []).length === 0 &&
+		(config.key_ids || []).length === 1 &&
+		config.key_ids?.[0] === "*" &&
+		(config.budgets || []).length === 0 &&
+		!config.rate_limit &&
+		(config.model_budgets || []).length === 0 &&
+		config.weight === undefined;
+
 	// Handle adding a new provider configuration
 	const handleAddProvider = (provider: string) => {
 		const existingConfig = providerConfigs.find((config) => config.provider === provider);
@@ -545,24 +573,45 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			return;
 		}
 
-		const newConfig = {
-			provider: provider,
-			weight: undefined as number | undefined, // undefined = excluded from weighted routing until user sets a weight
-			allowed_models: ["*"],
-			blacklisted_models: [],
-			key_ids: ["*"],
-		};
-
-		form.setValue("providerConfigs", [...providerConfigs, newConfig], {
+		form.setValue("providerConfigs", [...providerConfigs, makeDefaultProviderConfig(provider)], {
 			shouldDirty: true,
 		});
 	};
 
 	// Handle removing a provider configuration
 	const handleRemoveProvider = (index: number) => {
-		const updatedConfigs = providerConfigs.filter((_, i) => i !== index);
+		// Removing a provider while "Allow all providers" is on means "all except this one":
+		// turn the flag off so the remaining rows become the explicit allowlist.
+		if (form.getValues("allowAllProviders")) {
+			form.setValue("allowAllProviders", false, { shouldDirty: true });
+		}
+		const updatedConfigs = (form.getValues("providerConfigs") || []).filter((_, i) => i !== index);
 		form.setValue("providerConfigs", updatedConfigs, { shouldDirty: true });
 	};
+
+	// Handle the "Allow all providers" toggle. When turned on, every configured provider is
+	// materialized as a row (via the effect below) so budgets/limits can be set or a provider
+	// excluded. When turned off, untouched default rows are dropped and customized ones kept.
+	const handleAllowAllProvidersChange = (checked: boolean) => {
+		form.setValue("allowAllProviders", checked, { shouldDirty: true });
+		if (!checked) {
+			const kept = (form.getValues("providerConfigs") || []).filter((config) => !isDefaultProviderConfig(config));
+			form.setValue("providerConfigs", kept, { shouldDirty: true });
+		}
+	};
+
+	// While "Allow all providers" is on, keep a row for every configured provider so they are
+	// visible and can be given budgets or excluded. Providers added later show up here too.
+	// Reads current configs via getValues (not a dep) so this converges in one pass without looping.
+	useEffect(() => {
+		if (!allowAllProviders || availableProviders.length === 0) return;
+		const current = form.getValues("providerConfigs") || [];
+		const missing = availableProviders.filter((p) => p.name && !current.some((c) => c.provider === p.name));
+		if (missing.length === 0) return;
+		const additions = missing.map((p) => makeDefaultProviderConfig(p.name));
+		form.setValue("providerConfigs", [...current, ...additions], { shouldDirty: false });
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [allowAllProviders, availableProviders]);
 
 	// Handle adding a new MCP client configuration
 	const handleAddMCPClient = (mcpClientName: string) => {
@@ -922,6 +971,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 								: undefined,
 					is_active: data.isActive,
 					calendar_aligned: data.budgetCalendarAligned,
+					allow_all_providers: data.allowAllProviders,
 					reset_budget_usage: resetBudgetUsage,
 					...expiryPayload,
 				};
@@ -985,6 +1035,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					is_active: data.isActive,
 					// VK-level setting that governs both budget and rate-limit calendar alignment.
 					calendar_aligned: data.budgetCalendarAligned,
+					allow_all_providers: data.allowAllProviders,
 					// Optional expiry: send as UTC ISO string, or omit for no expiry
 					...(data.expiresAt ? { expires_at: new Date(data.expiresAt).toISOString() } : {}),
 				};
@@ -1088,8 +1139,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 										<AlertDescription>
 											{isEditing ? (
 												<>
-													This virtual key belongs to an access profile. What it can reach, and what it can spend, are the profile&apos;s: the
-													key itself carries only a name and a description.
+													This virtual key belongs to an access profile. What it can reach, and what it can spend, are the profile&apos;s:
+													the key itself carries only a name and a description.
 												</>
 											) : (
 												<>
@@ -1179,7 +1230,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 															<Info className="text-muted-foreground h-3 w-3" />
 														</span>
 													</TooltipTrigger>
-													<TooltipContent>
+													<TooltipContent className="max-w-sm">
 														<p>
 															Configure which providers this virtual key can use and their specific settings. Leave empty to block all
 															providers. Add providers to allow them.
@@ -1188,6 +1239,41 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 												</Tooltip>
 											</TooltipProvider>
 										</div>
+
+										{/* Allow all providers */}
+										<FormField
+											control={form.control}
+											name="allowAllProviders"
+											render={({ field }) => (
+												<FormItem>
+													<div className="flex w-full items-center justify-between gap-2 py-2 text-sm">
+														<div className="flex items-center gap-1.5">
+															<span>Allow all providers</span>
+															<TooltipProvider>
+																<Tooltip>
+																	<TooltipTrigger asChild>
+																		<span>
+																			<Info className="text-muted-foreground h-3 w-3" />
+																		</span>
+																	</TooltipTrigger>
+																	<TooltipContent className="max-w-sm">
+																		<p>
+																			Grant access to every provider, including ones added later. Set budgets or limits on specific
+																			providers below, or remove a provider to allow all except that one.
+																		</p>
+																	</TooltipContent>
+																</Tooltip>
+															</TooltipProvider>
+														</div>
+														<Switch
+															checked={field.value}
+															onCheckedChange={handleAllowAllProvidersChange}
+															data-testid="vk-allow-all-providers-toggle"
+														/>
+													</div>
+												</FormItem>
+											)}
+										/>
 
 										{/* Add Provider Dropdown */}
 										<div className="flex gap-2">
@@ -1356,8 +1442,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 											{(() => {
 												const defaultMCPClients = mcpClientsData.filter(
 													(client) =>
-														client.config.allow_by_default &&
-														!mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
+														client.config.allow_by_default && !mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
 												);
 												return defaultMCPClients.length > 0 ? (
 													<div className="text-muted-foreground rounded-md border p-3 text-xs">
@@ -1693,8 +1778,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 													Align to calendar cycle
 												</Label>
 												<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
-													Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation 	date. Quarterly budgets always align to fiscal quarter starts.
-													Applies to durations of a day or longer.
+													Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation
+													date. Quarterly budgets always align to fiscal quarter starts. Applies to durations of a day or longer.
 												</p>
 											</div>
 											<Switch
@@ -1808,9 +1893,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																fallbackOption={
 																	field.value
 																		? {
-																			value: field.value,
-																			label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
-																		}
+																				value: field.value,
+																				label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
+																			}
 																		: null
 																}
 																disabled={isTeamLocked}
@@ -1838,12 +1923,12 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																fallbackOption={
 																	field.value
 																		? {
-																			value: field.value,
-																			label:
-																				field.value === virtualKey?.customer_id
-																					? (virtualKey?.customer?.name ?? field.value)
-																					: field.value,
-																		}
+																				value: field.value,
+																				label:
+																					field.value === virtualKey?.customer_id
+																						? (virtualKey?.customer?.name ?? field.value)
+																						: field.value,
+																			}
 																		: null
 																}
 																triggerClassName="h-9"
@@ -1872,9 +1957,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																fallbackOption={
 																	field.value
 																		? {
-																			value: field.value,
-																			label: field.value === assignedUserId ? assignedUserLabel : field.value,
-																		}
+																				value: field.value,
+																				label: field.value === assignedUserId ? assignedUserLabel : field.value,
+																			}
 																		: null
 																}
 																triggerClassName="h-9"
