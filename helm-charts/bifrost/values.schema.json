@@ -4490,13 +4490,20 @@
                   }
                 },
                 {
-                  "not": {
-                    "required": ["password", "passwordCommand"]
-                  }
-                },
-                {
-                  "not": {
-                    "required": ["existingSecret", "passwordCommand"]
+                  "if": {
+                    "required": ["passwordCommand"]
+                  },
+                  "then": {
+                    "properties": {
+                      "password": {
+                        "const": "",
+                        "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                      },
+                      "existingSecret": {
+                        "const": "",
+                        "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                      }
+                    }
                   }
                 }
               ],
@@ -4766,13 +4773,20 @@
               }
             },
             {
-              "not": {
-                "required": ["password", "passwordCommand"]
-              }
-            },
-            {
-              "not": {
-                "required": ["existingSecret", "passwordCommand"]
+              "if": {
+                "required": ["passwordCommand"]
+              },
+              "then": {
+                "properties": {
+                  "password": {
+                    "const": "",
+                    "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                  },
+                  "existingSecret": {
+                    "const": "",
+                    "description": "Must be empty when passwordCommand is set: the password is produced by the command instead."
+                  }
+                }
               }
             }
           ]
