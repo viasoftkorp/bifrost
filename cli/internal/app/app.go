@@ -5,18 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/cli/internal/apis"
+	"github.com/maximhq/bifrost/cli/internal/browserauth"
+	"github.com/maximhq/bifrost/cli/internal/client"
 	"github.com/maximhq/bifrost/cli/internal/config"
 	"github.com/maximhq/bifrost/cli/internal/harness"
 	"github.com/maximhq/bifrost/cli/internal/installer"
 	"github.com/maximhq/bifrost/cli/internal/mcp"
 	"github.com/maximhq/bifrost/cli/internal/runtime"
 	"github.com/maximhq/bifrost/cli/internal/secrets"
+	"github.com/maximhq/bifrost/cli/internal/sessionauth"
 	"github.com/maximhq/bifrost/cli/internal/ui/logo"
 	"github.com/maximhq/bifrost/cli/internal/ui/tui"
 	"github.com/maximhq/bifrost/cli/internal/update"
@@ -35,13 +39,16 @@ type Options struct {
 // App is the main Bifrost CLI application. It manages configuration, state,
 // and the interactive TUI loop for selecting and launching harnesses.
 type App struct {
-	in        io.Reader
-	out       io.Writer
-	errOut    io.Writer
-	opts      Options
-	apiClient *apis.Client
-	state     *config.State
-	cfgFile   *config.FileConfig
+	in      io.Reader
+	out     io.Writer
+	errOut  io.Writer
+	opts    Options
+	state   *config.State
+	cfgFile *config.FileConfig
+	// sessionStore and httpClient are injectable seams for the SSO-backed model
+	// discovery path; production uses the OS keyring and default HTTP transport.
+	sessionStore sessionauth.Store
+	httpClient   *http.Client
 
 	statePath    string
 	configPath   string
@@ -52,11 +59,10 @@ type App struct {
 // New creates a new App instance with the given I/O streams and options.
 func New(in io.Reader, out, errOut io.Writer, opts Options) *App {
 	return &App{
-		in:        in,
-		out:       out,
-		errOut:    errOut,
-		opts:      opts,
-		apiClient: apis.NewClient(),
+		in:     in,
+		out:    out,
+		errOut: errOut,
+		opts:   opts,
 	}
 }
 
@@ -130,6 +136,10 @@ func (a *App) Run(ctx context.Context) error {
 				currentWorktree = seed.Worktree
 				seedApplied = true
 			}
+			agentToken, tokenErr := a.agentSessionStore().Get(activeProfile.ID, secrets.AgentToken)
+			if tokenErr != nil {
+				fmt.Fprintf(a.errOut, "warning: load Enterprise SSO session: %v\n", tokenErr)
+			}
 
 			choice, err := tui.RunChooser(tui.ChooserConfig{
 				Version:       a.opts.Version,
@@ -139,6 +149,7 @@ func (a *App) Run(ctx context.Context) error {
 				UpdateVersion: updateVersion,
 				BaseURL:       baseURL,
 				VirtualKey:    currentVK,
+				AgentSignedIn: strings.TrimSpace(agentToken) != "",
 				Harness:       currentSelection.Harness,
 				Model:         currentSelection.Model,
 				Worktree:      currentWorktree,
@@ -146,8 +157,10 @@ func (a *App) Run(ctx context.Context) error {
 				ReservedRows:  1, // bottom tab bar
 				Harnesses:     harnesses,
 				TabBarLine:    tabBarLine,
-				FetchModels:   a.apiClient.ListModels,
-				Input:         stdinReader,
+				FetchModels: func(fetchCtx context.Context, requestedBaseURL, requestedVirtualKey string) ([]string, error) {
+					return a.listModels(fetchCtx, activeProfile.ID, activeProfile.BaseURL, requestedBaseURL, requestedVirtualKey)
+				},
+				Input: stdinReader,
 				Notify: func(message string, isError bool) {
 					level := runtime.TabNoticeInfo
 					if isError {
@@ -238,13 +251,23 @@ func (a *App) Run(ctx context.Context) error {
 			}
 
 			mcp.AttachBestEffort(ctx, a.out, a.errOut, h, activeProfile.BaseURL, vk)
+			agentToken, tokenErr = a.agentSessionStore().Get(activeProfile.ID, secrets.AgentToken)
+			if tokenErr != nil {
+				fmt.Fprintf(a.errOut, "warning: load Enterprise SSO session: %v\n", tokenErr)
+				agentToken = ""
+			}
+			agentToken = launchAgentToken(agentToken, baseURL, activeProfile.BaseURL)
+			tokenHelperCommand, authErr := runtime.PrepareLaunchAuthentication(h, agentToken, vk)
+			if authErr != nil {
+				msg = authErr.Error()
+				isAfterSession = false
+				continue
+			}
 
 			return &runtime.LaunchSpec{
-				Harness:    h,
-				BaseURL:    activeProfile.BaseURL,
-				VirtualKey: vk,
-				Model:      selection.Model,
-				Worktree:   worktree,
+				Harness: h, BaseURL: activeProfile.BaseURL, VirtualKey: vk, AgentToken: agentToken,
+				Context: activeProfile.ID, StatePath: a.statePath, TokenHelperCommand: tokenHelperCommand,
+				Model: selection.Model, Worktree: worktree,
 			}, nil
 		}
 	}
@@ -315,6 +338,67 @@ func (a *App) Run(ctx context.Context) error {
 		message = ""
 		afterSession = true
 	}
+}
+
+func (a *App) agentSessionStore() sessionauth.Store {
+	if a.sessionStore != nil {
+		return a.sessionStore
+	}
+	return secrets.Keyring{}
+}
+
+// listModels gives the chooser the same SSO-first authentication and refresh
+// semantics as non-interactive CLI inference commands.
+// listModels fetches available models for baseURL. The Enterprise SSO agent
+// bearer is only attached when baseURL matches the profile's configured
+// (trusted) base URL — never to an edited or typo'd URL the user has not
+// confirmed, since that would leak a live credential to an arbitrary host.
+func (a *App) listModels(ctx context.Context, profileID, trustedBaseURL, baseURL, virtualKey string) ([]string, error) {
+	store := a.agentSessionStore()
+	credentials := client.Credentials{VirtualKey: virtualKey}
+	if strings.TrimSpace(baseURL) == strings.TrimSpace(trustedBaseURL) {
+		agentToken, err := store.Get(profileID, secrets.AgentToken)
+		if err != nil {
+			return nil, err
+		}
+		selectedID, err := store.Get(profileID, secrets.AgentVirtualKeyID)
+		if err != nil {
+			return nil, err
+		}
+		credentials.AgentToken = agentToken
+		credentials.AgentVirtualKeyID = selectedID
+	}
+	api := client.New(baseURL, credentials, 20*time.Second)
+	if a.httpClient != nil {
+		api.HTTPClient = a.httpClient
+	}
+	api.UserAgent = "bifrost-cli/" + a.opts.Version
+	browserClient := &browserauth.Client{
+		BaseURL: baseURL, HTTPClient: api.HTTPClient, UserAgent: api.UserAgent, Version: a.opts.Version,
+	}
+	refresher := sessionauth.Refresher{
+		Store: store, ProfileID: profileID, StatePath: a.statePath, Client: browserClient,
+	}
+	api.RefreshAgentToken = refresher.Refresh
+	response, err := api.Do(ctx, client.Request{Path: "/v1/models", Auth: client.AuthInference})
+	if err != nil {
+		return nil, err
+	}
+	return apis.ParseModels(response.Body)
+}
+
+// launchAgentToken returns the Enterprise SSO agent token to carry into a
+// LaunchSpec, or empty if the launch's base URL was edited away from the
+// profile's trusted origin. A launched coding agent sends every inference
+// request — including this bearer token — to its configured base URL for
+// the whole session, so carrying it to an edited/unvalidated URL would leak
+// a live credential (CWE-522). PrepareLaunchAuthentication then naturally
+// falls back to the virtual key alone when this returns empty.
+func launchAgentToken(agentToken, trustedBaseURL, launchBaseURL string) string {
+	if strings.TrimSpace(launchBaseURL) != strings.TrimSpace(trustedBaseURL) {
+		return ""
+	}
+	return agentToken
 }
 
 // loadStateAndConfig loads configuration from saved state from the last run
