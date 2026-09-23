@@ -250,7 +250,11 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 
 ### Error Types
 
-`bifrost_error_requests_total` carries two error dimensions. `status_code` is the raw fact. `error_type` is the normalized interpretation: a closed, low-cardinality vocabulary that answers **whose fault was it**, which is what alarms actually need.
+`bifrost_error_requests_total` carries two error dimensions. `status_code` is the status the caller received, including the 500s Bifrost raises internally. `error_type` is the normalized interpretation: a closed, low-cardinality vocabulary that answers **whose fault was it**, which is what alarms actually need.
+
+<Note>
+Before Bifrost 2.2.2, a failure Bifrost raised itself — a request-conversion error, or an empty or unparseable provider response — carried no status of its own and was labelled `status_code="unknown"`, even though the caller received a 500. 5xx dashboards and alerts under-counted these. They are now labelled `status_code="500"`; repoint anything keyed on `status_code="unknown"`, which is no longer emitted on this path.
+</Note>
 
 Values are prefixed by fault domain, so a success-rate alarm that should ignore caller mistakes is one clause rather than a list of reasons that grows over time:
 
