@@ -75,6 +75,7 @@ export default function MCPView() {
 			localConfig.mcp_code_mode_binding_level !== (config.mcp_code_mode_binding_level || "server") ||
 			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
+			(localConfig.mcp_server_instructions_mode ?? "off") !== (config.mcp_server_instructions_mode ?? "off") ||
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
 			clientURLChanged ||
 			(localConfig.mcp_server_auth_mode ?? "headers") !== (config.mcp_server_auth_mode ?? "headers") ||
@@ -127,6 +128,15 @@ export default function MCPView() {
 			...prev,
 			mcp_disable_auto_tool_inject: checked,
 		}));
+	}, []);
+
+	const handleServerInstructionsModeChange = useCallback((value: string) => {
+		if (value === "off" || value === "gateway" || value === "all") {
+			setLocalConfig((prev) => ({
+				...prev,
+				mcp_server_instructions_mode: value,
+			}));
+		}
 	}, []);
 
 	const handleTempTokenAuthChange = useCallback((checked: boolean) => {
@@ -357,6 +367,31 @@ export default function MCPView() {
 						disabled={!hasSettingsUpdateAccess}
 						data-testid="mcp-enable-temp-token-auth-switch"
 					/>
+				</div>
+
+				{/* Server Instructions Forwarding */}
+				<div className="space-y-4 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-server-instructions-mode" className="text-sm font-medium">
+							Forward Server Instructions
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Upstream MCP servers can return an <code className="text-xs">instructions</code> string describing how to use their tools.
+							Off drops it. Gateway forwards it on the <code className="text-xs">/mcp</code> handshake, labeled per source server and scoped
+							to what the caller may see. All also injects it into chat and responses requests as a system message &mdash; this adds tokens
+							to every MCP-bearing request and changes the prompt prefix, which can invalidate provider-side prompt caching.
+						</p>
+					</div>
+					<Select value={localConfig.mcp_server_instructions_mode ?? "off"} onValueChange={handleServerInstructionsModeChange}>
+						<SelectTrigger id="mcp-server-instructions-mode" data-testid="mcp-server-instructions-mode" className="w-56">
+							<SelectValue placeholder="Select mode" />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="off">Off</SelectItem>
+							<SelectItem value="gateway">Gateway only</SelectItem>
+							<SelectItem value="all">Gateway and LLM requests</SelectItem>
+						</SelectContent>
+					</Select>
 				</div>
 
 				{/* Code Mode Binding Level */}

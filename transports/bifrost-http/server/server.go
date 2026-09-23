@@ -548,6 +548,13 @@ func (s *BifrostHTTPServer) GetAvailableMCPTools(ctx context.Context) []schemas.
 	return s.Client.GetAvailableMCPTools(bifrostCtx)
 }
 
+// GetMCPServerInstructions returns the aggregated upstream instructions visible to ctx,
+// which carries whatever narrowing admission stamped on the request.
+func (s *BifrostHTTPServer) GetMCPServerInstructions(ctx context.Context) string {
+	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	return s.Client.GetMCPServerInstructions(bifrostCtx)
+}
+
 // markPluginDisabled marks a plugin as disabled in the plugin status
 func (s *BifrostHTTPServer) markPluginDisabled(name string) error {
 	return s.Config.UpdatePluginStatus(name, schemas.PluginStatusDisabled)

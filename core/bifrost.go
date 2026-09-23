@@ -4265,6 +4265,16 @@ func (bifrost *Bifrost) GetAvailableMCPTools(ctx *schemas.BifrostContext) []sche
 	return bifrost.MCPManager.GetAvailableTools(ctx)
 }
 
+// GetMCPServerInstructions returns the aggregated initialize `instructions` of every MCP
+// client this request may see, ready to hand to a caller. Empty when nothing is visible,
+// nothing advertises instructions, or no MCP manager is configured.
+func (bifrost *Bifrost) GetMCPServerInstructions(ctx *schemas.BifrostContext) string {
+	if bifrost.MCPManager == nil {
+		return ""
+	}
+	return bifrost.MCPManager.GetAggregatedServerInstructions(ctx)
+}
+
 // AddMCPClient adds a new MCP client to the Bifrost instance.
 // This allows for dynamic MCP client management at runtime.
 //
