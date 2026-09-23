@@ -267,7 +267,7 @@ func PreMCPConnectionHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPCo
 
 // PostMCPConnectionHook runs after the upstream MCP handshake completes.
 // The response carries ServerInfo + capability flags + protocol version
-// negotiated during initialize. Use this for observation, capability gating,
+// negotiated during initialize, plus the server's own Instructions. Use this for observation, capability gating,
 // or to attach connection metadata to downstream telemetry.
 //
 // On a failed handshake, resp is nil and bifrostErr is populated. Plugins
@@ -288,6 +288,12 @@ func PostMCPConnectionHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCP
 		if resp.ServerInfo != nil {
 			fmt.Printf("[MCP-Only Plugin] Connected: server=%s version=%s protocol=%s\n",
 				resp.ServerInfo.Name, resp.ServerInfo.Version, resp.ProtocolVersion)
+		}
+		if resp.Instructions != "" {
+			// Whether these reach a caller is a deployment setting
+			// (mcp.tool_manager_config.server_instructions_mode); they are
+			// captured either way, so this hook always sees them.
+			fmt.Printf("[MCP-Only Plugin] Server instructions (%d bytes): %s\n", len(resp.Instructions), resp.Instructions)
 		}
 		if resp.ServerCapabilities != nil && !resp.ServerCapabilities.Tools {
 			fmt.Printf("[MCP-Only Plugin] Warning: server %q does not advertise Tools capability\n", resp.ExtraFields.ClientName)

@@ -183,6 +183,11 @@ func connect(cfg *config) (*client.Client, error) {
 		}
 	}
 	fmt.Printf("connected to %s %s\n", res.ServerInfo.Name, res.ServerInfo.Version)
+	// Pointed at Bifrost's /mcp endpoint this is the aggregate of every upstream the
+	// virtual key may see; pointed at a server directly it is that server's own text.
+	if res.Instructions != "" {
+		fmt.Printf("server instructions:\n%s\n", res.Instructions)
+	}
 	return c, nil
 }
 
