@@ -119361,7 +119361,7 @@
             "type": "number",
             "exclusiveMinimum": 0,
             "maximum": 1,
-            "default": 0.8
+            "default": 0.7
           },
           "semantic_search_limit": {
             "type": "integer",
@@ -119503,7 +119503,7 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "default": 0.8,
+            "default": 0.7,
             "description": "Zero means \"use the default\". ValidateConfigInput resolves an explicit\nzero before validating, so the write is accepted; the resolved value on\nWarpConfig keeps the positive bound.\n"
           },
           "semantic_search_limit": {
