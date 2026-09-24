@@ -39,8 +39,9 @@ This plugin demonstrates how context flows through different hooks:
 1. **HTTPTransportPreHook** → Stores HTTP metadata
 2. **PreLLMHook/PreMCPHook** → Accesses HTTP metadata, stores LLM/MCP metadata
 3. **PostLLMHook/PostMCPHook** → Accesses stored timing data
-4. **HTTPTransportPostHook** → Adds final headers
-5. **Inject** → Receives complete trace asynchronously
+4. **HTTPTransportPostHook** → Processes the completed response
+5. **HTTPTransportResponseHeadersHook** → Adds final headers before commit, including for streams
+6. **Inject** → Receives complete trace asynchronously
 
 ## Use Cases
 
@@ -160,7 +161,8 @@ For a typical LLM request:
 3. *LLM Provider Call*
 4. `PostLLMHook` (After LLM provider)
 5. `HTTPTransportPostHook` (HTTP layer exit)
-6. `Inject` (Asynchronous trace delivery)
+6. `HTTPTransportResponseHeadersHook` (pre-commit response headers)
+7. `Inject` (Asynchronous trace delivery)
 
 For an MCP request:
 
@@ -169,7 +171,8 @@ For an MCP request:
 3. *MCP Server Call*
 4. `PostMCPHook` (After MCP server)
 5. `HTTPTransportPostHook` (HTTP layer exit)
-6. `Inject` (Asynchronous trace delivery)
+6. `HTTPTransportResponseHeadersHook` (pre-commit response headers)
+7. `Inject` (Asynchronous trace delivery)
 
 ## Notes
 
