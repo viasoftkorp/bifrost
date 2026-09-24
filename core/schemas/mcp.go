@@ -268,6 +268,9 @@ type VirtualMCPConfig struct {
 	Description *string `json:"description,omitempty"`
 	// Enabled defaults to true when omitted; a disabled Virtual MCP is not served.
 	Enabled *bool `json:"enabled,omitempty"`
+	// Instructions is model-facing, unlike Description; empty inherits only.
+	Instructions     *string                    `json:"instructions,omitempty"`
+	InstructionsMode MCPVirtualInstructionsMode `json:"instructions_mode,omitempty"`
 	// Tools are the per-client tool specs the Virtual MCP exposes (required).
 	Tools []MCPToolSpecConfig `json:"tools"`
 	// VirtualKeyIDs are the virtual keys this Virtual MCP is attached to (reachable through them).
@@ -402,6 +405,21 @@ const (
 type MCPServerInstructions struct {
 	ClientName   string `json:"client_name"`
 	Instructions string `json:"instructions"`
+}
+
+// MCPVirtualInstructionsMode decides how a Virtual MCP's instructions combine with inherited ones.
+type MCPVirtualInstructionsMode string
+
+const (
+	MCPVirtualInstructionsModeAppend  MCPVirtualInstructionsMode = "append"
+	MCPVirtualInstructionsModeReplace MCPVirtualInstructionsMode = "replace"
+)
+
+// MCPVirtualInstructions is a Virtual MCP's own instructions. Empty Text inherits only.
+type MCPVirtualInstructions struct {
+	Name string                     `json:"name"`
+	Text string                     `json:"text"`
+	Mode MCPVirtualInstructionsMode `json:"mode"`
 }
 
 // MCPAuthType defines the authentication type for MCP connections
@@ -1005,12 +1023,12 @@ type MCPClientState struct {
 	ConnectionInfo  *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
 	// ServerInstructions is the upstream's initialize `instructions`, as of the last handshake.
 	// Overwritten (never appended to) on reconnect, so dropping it upstream drops it here.
-	ServerInstructions string `json:"server_instructions,omitempty"`
-	CancelFunc      context.CancelFunc       `json:"-"`               // Cancel function for SSE connections (not serialized)
-	State           MCPConnectionState       // Connection state (healthy, unstable, needs_reauth, ...)
-	LastFailure     *MCPConnectionFailure    `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
-	ConnGeneration  uint64                   `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
-	LastToolsHash   string                   `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
+	ServerInstructions string                `json:"server_instructions,omitempty"`
+	CancelFunc         context.CancelFunc    `json:"-"` // Cancel function for SSE connections (not serialized)
+	State              MCPConnectionState    // Connection state (healthy, unstable, needs_reauth, ...)
+	LastFailure        *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
+	ConnGeneration     uint64                `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
+	LastToolsHash      string                `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.

@@ -22,10 +22,10 @@ const (
 	maxInstructionsPerClient = 4096
 	maxInstructionsTotal     = 16384
 
-	// instructionTagPrefix matches both the opening and closing block tag ("<mcp_server"
-	// and "</mcp_server>" both contain it once "/" is stripped). Upstream text containing
-	// it is neutralized so a server cannot draw a boundary and speak as another.
-	instructionTagPrefix = "mcp_server"
+	// Block tag names. Upstream text containing either is neutralized, so a server cannot draw
+	// a boundary and speak as another, or as the Virtual MCP serving it.
+	instructionTagPrefix        = "mcp_server"
+	virtualInstructionTagPrefix = "virtual_mcp"
 )
 
 // GetServerInstructions returns the initialize `instructions` of every MCP client this
@@ -130,16 +130,43 @@ func instructionBlock(clientName, text string, omitted int) string {
 // rather than dropped so the reader can see something was there — silently deleting a server's
 // words would be worse than marking them.
 func sanitizeInstructionBody(s string) string {
-	if !strings.Contains(s, instructionTagPrefix) {
-		return s
+	for _, tag := range []string{instructionTagPrefix, virtualInstructionTagPrefix} {
+		s = strings.ReplaceAll(s, tag, "[removed]")
 	}
-	return strings.ReplaceAll(s, instructionTagPrefix, "[removed]")
+	return s
 }
 
 // escapeInstructionAttr makes clientName safe inside the name="..." attribute.
 func escapeInstructionAttr(s string) string {
 	r := strings.NewReplacer(`&`, "&amp;", `"`, "&quot;", `<`, "&lt;", `>`, "&gt;")
 	return r.Replace(s)
+}
+
+// ApplyVirtualMCPInstructions combines a Virtual MCP's own text with the blocks it inherits.
+// Empty text returns base unchanged.
+func ApplyVirtualMCPInstructions(base string, v schemas.MCPVirtualInstructions) string {
+	if v.Text == "" {
+		return base
+	}
+	text, omitted := truncateInstructions(sanitizeInstructionBody(v.Text), maxInstructionsPerClient)
+	block := virtualInstructionBlock(v.Name, text, omitted)
+	if v.Mode == schemas.MCPVirtualInstructionsModeReplace || base == "" {
+		return block
+	}
+	return base + "\n\n" + block
+}
+
+func virtualInstructionBlock(name, text string, omitted int) string {
+	var b strings.Builder
+	b.WriteString(`<virtual_mcp name="`)
+	b.WriteString(escapeInstructionAttr(name))
+	b.WriteString("\">\n")
+	b.WriteString(text)
+	if omitted > 0 {
+		b.WriteString(fmt.Sprintf("\n[truncated: %d bytes omitted]", omitted))
+	}
+	b.WriteString("\n</virtual_mcp>")
+	return b.String()
 }
 
 // truncateInstructions cuts s to at most limit bytes on a rune boundary, returning the kept
