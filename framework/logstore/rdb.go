@@ -1020,12 +1020,16 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 		// repeat rows whenever equal-timestamp rows come back in a different order
 		// between calls. The session query below already orders this way.
 		orderClause = "timestamp " + direction + ", id " + direction
+	// cost and latency are NULL on requests that never produced them - a
+	// failure has no cost - and a missing value is not the largest or the
+	// smallest one. Postgres sorts NULLs first under DESC and SQLite under
+	// ASC, so without NULLS LAST "most expensive" led with failed requests.
 	case "latency":
-		orderClause = "latency " + direction + ", id " + direction
+		orderClause = "latency " + direction + " NULLS LAST, id " + direction
 	case "tokens":
 		orderClause = "total_tokens " + direction + ", id " + direction
 	case "cost":
-		orderClause = "cost " + direction + ", id " + direction
+		orderClause = "cost " + direction + " NULLS LAST, id " + direction
 	default:
 		orderClause = "timestamp " + direction + ", id " + direction
 	}
@@ -4959,10 +4963,12 @@ func (s *RDBLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogS
 	switch pagination.SortBy {
 	case "timestamp":
 		orderClause = "timestamp " + direction
+	// NULLS LAST for the same reason as searchLogs: a tool call with no
+	// latency or cost recorded is not the extreme of either.
 	case "latency":
-		orderClause = "latency " + direction
+		orderClause = "latency " + direction + " NULLS LAST"
 	case "cost":
-		orderClause = "cost " + direction
+		orderClause = "cost " + direction + " NULLS LAST"
 	default:
 		orderClause = "timestamp " + direction
 	}

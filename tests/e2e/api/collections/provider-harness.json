@@ -170255,6 +170255,186 @@
           }
         }
       ]
+    },
+    {
+      "name": "117. Logs sort puts missing cost last (logs-null-sort)",
+      "description": "Sorting /api/logs by cost put rows with no cost (failed, cancelled, count_tokens and list_models requests) first: Postgres sorts NULLs first under DESC, SQLite under ASC, so 'most expensive' on the Logs page and Warp's query_logs led with zero-cost failures. framework/logstore/rdb.go now orders cost and latency NULLS LAST. The seeds put one priced openai request and one provider 404 (logged with no cost) in a fresh session; both reads must list the priced row first. Red before the fix on either backend (the harness profile's SQLite fails the ASC read, Postgres the DESC read). ClickHouse already sorts NULLs last. A NULL-latency row cannot be produced from outside, so latency is covered by the Go test TestSearchLogsSortsMissingCostAndLatencyLast.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini logs-null-sort seed: priced request",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The first seed always starts a fresh session: collection variables outlive a",
+                  "// run in Postman, and reads that picked up an earlier run's rows would see 4, not 2.",
+                  "pm.collectionVariables.set('logsNullSortSession', 'harness-logs-null-sort-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('logs-null-sort seed: priced request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{logsNullSortSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "openai logs-null-sort seed: failed request with no cost",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('logsNullSortSession')) {",
+                  "  pm.collectionVariables.set('logsNullSortSession', 'harness-logs-null-sort-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('logs-null-sort seed: unknown model fails at the provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{logsNullSortSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/harness-no-such-model\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "openai logs-null-sort: cost desc lists priced request first",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('logs-null-sort list responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('logsNullSortTries'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "var tries = Number(pm.collectionVariables.get('logsNullSortTries') || 0);",
+                  "if (logs.length < 2 && tries < 10) {",
+                  "  // Both seed rows are written by the async log writer (1s batches).",
+                  "  pm.collectionVariables.set('logsNullSortTries', tries + 1);",
+                  "  setTimeout(function () {}, 1500);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('logsNullSortTries');",
+                  "pm.test('logs-null-sort cost desc: priced row first, missing cost last', function () {",
+                  "  pm.expect(logs.length, 'rows in session: ' + pm.response.text()).to.equal(2);",
+                  "  pm.expect(logs[0].cost, 'first row should carry a cost: ' + JSON.stringify(logs.map(function (l) { return [l.status, l.cost]; }))).to.be.a('number');",
+                  "  pm.expect(logs[1].cost == null, 'last row should be the one with no cost: ' + JSON.stringify(logs.map(function (l) { return [l.status, l.cost]; }))).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?session_id={{logsNullSortSession}}&sort_by=cost&order=desc&limit=10"
+          }
+        },
+        {
+          "name": "openai logs-null-sort: cost asc lists missing cost last",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('logs-null-sort list responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('logsNullSortTries'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "var tries = Number(pm.collectionVariables.get('logsNullSortTries') || 0);",
+                  "if (logs.length < 2 && tries < 10) {",
+                  "  // Both seed rows are written by the async log writer (1s batches).",
+                  "  pm.collectionVariables.set('logsNullSortTries', tries + 1);",
+                  "  setTimeout(function () {}, 1500);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('logsNullSortTries');",
+                  "pm.test('logs-null-sort cost asc: priced row first, missing cost last', function () {",
+                  "  pm.expect(logs.length, 'rows in session: ' + pm.response.text()).to.equal(2);",
+                  "  pm.expect(logs[0].cost, 'first row should carry a cost: ' + JSON.stringify(logs.map(function (l) { return [l.status, l.cost]; }))).to.be.a('number');",
+                  "  pm.expect(logs[1].cost == null, 'last row should be the one with no cost: ' + JSON.stringify(logs.map(function (l) { return [l.status, l.cost]; }))).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?session_id={{logsNullSortSession}}&sort_by=cost&order=asc&limit=10"
+          }
+        }
+      ]
     }
   ]
 }
