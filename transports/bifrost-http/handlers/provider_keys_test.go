@@ -888,3 +888,63 @@ func ecTestPEM(t *testing.T) string {
 	}
 	return string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}))
 }
+
+// TestMergeUpdatedKey_VertexAWSWorkloadIdentityRoleARN covers the one masked field inside the
+// Vertex federation block. GET renders aws_role_arn as a mask, so an edit that leaves it alone
+// sends the mask back; the merge must restore the stored ARN and must never persist the mask.
+// The identifiers in the block (audience, service account, region) are returned in clear and
+// therefore pass through untouched.
+func TestMergeUpdatedKey_VertexAWSWorkloadIdentityRoleARN(t *testing.T) {
+	h := &ProviderHandler{}
+	secret := func(value string) schemas.SecretVar { return *schemas.NewSecretVar(value) }
+	secretPtr := func(value string) *schemas.SecretVar { return schemas.NewSecretVar(value) }
+	mask := "arn:" + strings.Repeat("*", 24) + "Hop0"
+
+	stored := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: secret("my-project"),
+			Region:    secret("us-central1"),
+			AWSWorkloadIdentity: &schemas.VertexAWSWorkloadIdentityConfig{
+				Audience:            secret("//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/aws"),
+				ServiceAccountEmail: secretPtr("vertex@my-project.iam.gserviceaccount.com"),
+				AWSRoleARN:          secretPtr("arn:aws:iam::123456789012:role/VertexHop"),
+			},
+		},
+	}
+	update := schemas.Key{
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: secret("my-project"),
+			Region:    secret("us-central1"),
+			AWSWorkloadIdentity: &schemas.VertexAWSWorkloadIdentityConfig{
+				Audience:            secret("//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/aws"),
+				ServiceAccountEmail: secretPtr("other@my-project.iam.gserviceaccount.com"),
+				AWSRoleARN:          secretPtr(mask),
+			},
+		},
+	}
+
+	merged, err := h.mergeUpdatedKey(stored, update)
+	if err != nil {
+		t.Fatalf("mergeUpdatedKey returned error: %v", err)
+	}
+	if got := merged.VertexKeyConfig.AWSWorkloadIdentity.AWSRoleARN.GetValue(); got != "arn:aws:iam::123456789012:role/VertexHop" {
+		t.Errorf("expected stored aws_role_arn to be preserved, got %q", got)
+	}
+	if got := merged.VertexKeyConfig.AWSWorkloadIdentity.ServiceAccountEmail.GetValue(); got != "other@my-project.iam.gserviceaccount.com" {
+		t.Errorf("expected edited service_account_email to be applied, got %q", got)
+	}
+
+	// A mask with nothing stored behind it is a client bug and must be rejected, not persisted.
+	// The first merge rewrote the update's pointer in place, so send a fresh mask.
+	stored.VertexKeyConfig.AWSWorkloadIdentity = nil
+	update.VertexKeyConfig.AWSWorkloadIdentity.AWSRoleARN = secretPtr(mask)
+	if _, err := h.mergeUpdatedKey(stored, update); err == nil {
+		t.Fatal("expected masked aws_role_arn without a stored value to be rejected")
+	}
+
+	// Omitting the role ARN entirely (direct access, no hop) must not trip the guard.
+	update.VertexKeyConfig.AWSWorkloadIdentity.AWSRoleARN = nil
+	if _, err := h.mergeUpdatedKey(stored, update); err != nil {
+		t.Fatalf("expected federation block without aws_role_arn to merge cleanly, got: %v", err)
+	}
+}

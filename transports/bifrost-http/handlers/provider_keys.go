@@ -547,6 +547,16 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 				return schemas.Key{}, err
 			}
 		}
+		// aws_workload_identity.aws_role_arn is the only masked field in the federation block.
+		if wif := mergedKey.VertexKeyConfig.AWSWorkloadIdentity; wif != nil && wif.AWSRoleARN != nil {
+			var storedRoleARN *schemas.SecretVar
+			if oldRawKey.VertexKeyConfig != nil && oldRawKey.VertexKeyConfig.AWSWorkloadIdentity != nil {
+				storedRoleARN = oldRawKey.VertexKeyConfig.AWSWorkloadIdentity.AWSRoleARN
+			}
+			if err := preserve(wif.AWSRoleARN, storedRoleARN, "vertex_key_config.aws_workload_identity.aws_role_arn"); err != nil {
+				return schemas.Key{}, err
+			}
+		}
 	}
 
 	if mergedKey.BedrockKeyConfig != nil {

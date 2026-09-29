@@ -661,7 +661,92 @@ def test_warp_config_input_models_the_enabled_contract():
     assert not problems, "Warp enabled-config contract:\n    " + "\n    ".join(problems)
 
 
+
+
+def test_secret_capable_values_accept_bare_strings():
+    """schemas.SecretVar unmarshals a bare string as well as the {value, ref, type} object,
+    and every provider/governance secret field is documented through the shared EnvVar
+    schema. EnvVar must therefore be a oneOf of both shapes, in the source and in every
+    inlined copy in the bundle, or generated clients model the fields as object-only."""
+    import json
+
+    def is_secret_object(node):
+        return (
+            isinstance(node, dict)
+            and node.get("type") == "object"
+            and set((node.get("properties") or {})) == {"value", "ref", "type"}
+        )
+
+    def accepts_string(node):
+        branches = node.get("oneOf") if isinstance(node, dict) else None
+        if not isinstance(branches, list):
+            return False
+        return any(b.get("type") == "string" for b in branches) and any(is_secret_object(b) for b in branches)
+
+    source = load(HERE / "schemas" / "management" / "common.yaml")["EnvVar"]
+    assert accepts_string(source), "common.yaml#/EnvVar is object-only; it must be a oneOf [string, object]"
+
+    def collect(node, out):
+        if isinstance(node, dict):
+            if is_secret_object(node) and "secret-capable" in str(node.get("description", "")):
+                out.append(node)
+            for value in node.values():
+                collect(value, out)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value, out)
+
+    object_only = []
+    collect(json.loads((HERE / "openapi.json").read_text(encoding="utf-8")), object_only)
+    assert not object_only, f"openapi.json still inlines {len(object_only)} object-only secret-capable value(s)"
+
+
+def test_vertex_aws_workload_identity_contract():
+    """The Vertex aws_workload_identity block is defined in transports/config.schema.json;
+    the OpenAPI source and bundle must document the same five fields, require the audience,
+    and reject unknown properties like the configuration contract does."""
+    import json
+
+    contract = json.loads(
+        (REPO_ROOT / "transports" / "config.schema.json").read_text(encoding="utf-8")
+    )
+    want = contract["$defs"]["vertex_key"]["allOf"][1]["properties"]["vertex_key_config"]["properties"]["aws_workload_identity"]
+
+    def check_block(where, vertex):
+        block = (vertex.get("properties") or {}).get("aws_workload_identity")
+        assert isinstance(block, dict), f"{where}: vertex_key_config has no aws_workload_identity"
+        assert set(block.get("properties") or {}) == set(want["properties"]), (
+            f"{where}: aws_workload_identity fields {sorted(block.get('properties') or {})} "
+            f"differ from config.schema.json {sorted(want['properties'])}"
+        )
+        assert block.get("required") == want["required"], f"{where}: required must be {want['required']}"
+        assert block.get("additionalProperties") is False, f"{where}: aws_workload_identity must set additionalProperties: false"
+        assert "force_single_region" in (vertex.get("properties") or {}), f"{where}: vertex_key_config is missing force_single_region"
+
+    check_block("schemas/management/providers.yaml", load(HERE / "schemas" / "management" / "providers.yaml")["VertexKeyConfig"])
+
+    bundle = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    found = []
+
+    def collect(node):
+        if isinstance(node, dict):
+            vertex = node.get("vertex_key_config")
+            if isinstance(vertex, dict) and "properties" in vertex:
+                found.append(vertex)
+            for value in node.values():
+                collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+
+    collect(bundle)
+    assert found, "openapi.json has no inlined vertex_key_config"
+    for vertex in found:
+        check_block("openapi.json", vertex)
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
+check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
+check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
 check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_cooldown_bounds_match_config_schema)
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)

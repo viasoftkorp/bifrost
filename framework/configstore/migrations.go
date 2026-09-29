@@ -418,6 +418,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_model_config_scope_columns"}, run: migrationAddModelConfigScopeColumns},
 	{IDs: []string{"migrate_provider_governance_to_model_configs"}, run: migrationMigrateProviderGovernanceToModelConfigs},
 	{IDs: []string{"add_budget_model_config_id_column"}, run: migrationAddBudgetModelConfigIDColumn},
+	{IDs: []string{"add_vertex_aws_workload_identity_column"}, run: migrationAddVertexAWSWorkloadIdentityColumn},
 	{IDs: []string{"add_model_config_calendar_aligned_column"}, run: migrationAddModelConfigCalendarAlignedColumn},
 	{IDs: []string{"migrate_virtual_key_governance_to_model_configs"}, run: migrationMigrateVirtualKeyGovernanceToModelConfigs},
 	{IDs: []string{"add_customer_calendar_aligned_column"}, run: migrationAddCustomerCalendarAlignedColumn},
@@ -14169,6 +14170,36 @@ func migrationAddTTFTTimeoutMsColumnToRoutingTargets(ctx context.Context, db *go
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddVertexAWSWorkloadIdentityColumn adds the vertex_aws_workload_identity_json column to
+// the config_keys table. It holds the JSON-serialized aws_workload_identity block of a Vertex key
+// (GCP Workload Identity Federation from an AWS identity), encrypted like the other key secrets.
+func migrationAddVertexAWSWorkloadIdentityColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vertex_aws_workload_identity_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "vertex_aws_workload_identity_json"); err != nil {
+				return fmt.Errorf("failed to add vertex_aws_workload_identity_json column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "vertex_aws_workload_identity_json"); err != nil {
+				return fmt.Errorf("failed to drop vertex_aws_workload_identity_json column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running vertex aws workload identity column migration: %s", err.Error())
 	}
 	return nil
 }
