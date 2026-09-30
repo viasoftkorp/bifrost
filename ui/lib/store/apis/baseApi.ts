@@ -218,6 +218,8 @@ export const baseApi = createApi({
 		"WarpConfig",
 		"WarpBackfillStatus",
 		"WarpConversations",
+		"Agents",
+		"AgentLogs",
 	],
 	endpoints: () => ({}),
 });
