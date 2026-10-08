@@ -52,6 +52,31 @@ app.kubernetes.io/component: server
 {{- toYaml $constraints }}
 {{- end }}
 
+{{- /* Init containers for the Bifrost pod: native sidecars from .Values.sidecars first (each
+       gets restartPolicy: Always, so it starts before the app and keeps running beside it),
+       then .Values.initContainers in order. Native sidecars need Kubernetes 1.29+, where the
+       SidecarContainers feature is on by default; older API servers drop or reject the field,
+       which would leave the pod stuck behind an init container that never exits. */ -}}
+{{- define "bifrost.initContainers" -}}
+{{- $containers := list }}
+{{- range .Values.sidecars }}
+{{- $sidecar := deepCopy . }}
+{{- $_ := set $sidecar "restartPolicy" "Always" }}
+{{- $containers = append $containers $sidecar }}
+{{- end }}
+{{- range .Values.initContainers }}
+{{- $containers = append $containers . }}
+{{- end }}
+{{- range $containers }}
+{{- if and (eq (toString .restartPolicy) "Always") (semverCompare "<1.29.0-0" $.Capabilities.KubeVersion.Version) }}
+{{- fail (printf "ERROR: native sidecar container '%s' (restartPolicy: Always) needs Kubernetes 1.29 or newer; this cluster reports %s. Use extraContainers for a regular sidecar instead." .name $.Capabilities.KubeVersion.Version) }}
+{{- end }}
+{{- end }}
+{{- if $containers }}
+{{- toYaml $containers }}
+{{- end }}
+{{- end }}
+
 {{- define "bifrost.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
 {{- default (include "bifrost.fullname" .) .Values.serviceAccount.name }}

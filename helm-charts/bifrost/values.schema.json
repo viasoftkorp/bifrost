@@ -6251,6 +6251,35 @@
       "items": {
         "type": "object"
       }
+    },
+    "sidecars": {
+      "type": "array",
+      "description": "Native sidecar containers (Kubernetes 1.29+), rendered as init containers with restartPolicy: Always ahead of initContainers. Standard Kubernetes container specs.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "image": { "type": "string", "minLength": 1 },
+          "restartPolicy": {
+            "type": "string",
+            "enum": ["Always"],
+            "description": "Always set by the chart; a native sidecar cannot use another policy"
+          }
+        },
+        "required": ["name", "image"]
+      }
+    },
+    "extraContainers": {
+      "type": "array",
+      "description": "Regular sidecar containers appended to the Bifrost pod's containers. Standard Kubernetes container specs.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "image": { "type": "string", "minLength": 1 }
+        },
+        "required": ["name", "image"]
+      }
     }
   },
   "$defs": {

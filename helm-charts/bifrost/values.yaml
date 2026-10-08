@@ -2115,6 +2115,30 @@ envFrom: []
   # - configMapRef:
   #     name: my-configmap
 
+# Native sidecar containers (Kubernetes 1.29+). Each entry is a standard container spec,
+# rendered as an init container with restartPolicy: Always: it starts before Bifrost (and
+# before the initContainers below), keeps running beside it, is restarted if it exits, and
+# is stopped after Bifrost on shutdown. The chart refuses to render these on older clusters.
+sidecars: []
+  # - name: log-shipper
+  #   image: fluent/fluent-bit:3.2
+  #   volumeMounts:
+  #     - name: shared-logs            # declare the volume under `volumes`
+  #       mountPath: /var/log/bifrost
+
+# Regular sidecar containers, appended to the pod's containers after Bifrost. They run
+# alongside Bifrost with no start or stop ordering and share its network namespace, so
+# they can reach Bifrost on localhost:8080. Use `sidecars` when the container must be up
+# before Bifrost starts or outlive it on shutdown.
+extraContainers: []
+  # - name: metrics-proxy
+  #   image: nginx:1.27-alpine
+  #   ports:
+  #     - containerPort: 9090
+  #       name: metrics-proxy
+
 # Init containers to run before the main application container.
 # Provide a list of init containers using standard Kubernetes container spec.
+# An entry with restartPolicy: Always is a native sidecar too (Kubernetes 1.29+); use that
+# instead of `sidecars` when a sidecar must start after a specific init container.
 initContainers: []

@@ -252,6 +252,45 @@ initContainers:
     command: ["sh", "-c", "until nc -z postgres-svc 5432; do sleep 2; done"]
 ```
 
+### Sidecar Containers
+
+The chart supports both kinds of Kubernetes sidecar. Each entry is a standard container spec, rendered into the Bifrost Deployment or StatefulSet pod. All containers in the pod share its network, so a sidecar reaches Bifrost on `localhost:8080`.
+
+**Native sidecars** (`sidecars`, Kubernetes 1.29+) are rendered as init containers with `restartPolicy: Always`. Kubernetes starts them before Bifrost, keeps them running beside it, restarts them if they exit, and stops them only after Bifrost has shut down. Use them for proxies, log shippers, or anything Bifrost needs from startup to shutdown:
+
+```yaml
+sidecars:
+  - name: log-shipper
+    image: fluent/fluent-bit:3.2
+    volumeMounts:
+      - name: shared-logs
+        mountPath: /var/log/bifrost
+
+volumes:
+  - name: shared-logs
+    emptyDir: {}
+```
+
+**Regular sidecars** (`extraContainers`) are appended to the pod's containers after Bifrost. They start and stop alongside it with no ordering guarantee, and work on any Kubernetes version:
+
+```yaml
+extraContainers:
+  - name: metrics-proxy
+    image: nginx:1.27-alpine
+    ports:
+      - containerPort: 9090
+        name: metrics-proxy
+```
+
+| Value | Rendered as | Starts | Stops | Kubernetes |
+|-------|-------------|--------|-------|------------|
+| `sidecars` | `initContainers` with `restartPolicy: Always`, ahead of `initContainers` | Before `initContainers` and Bifrost | After Bifrost | 1.29+ |
+| `extraContainers` | `containers`, after Bifrost | With Bifrost | With Bifrost | Any |
+
+`sidecars` start before the regular `initContainers`, so those can already use them (for example, a database proxy a migration init container needs). If a native sidecar must instead start after a specific init container, put it in `initContainers` with `restartPolicy: Always` at that position. On a cluster older than 1.29, the chart refuses to render a native sidecar from either value rather than leave the pod stuck behind an init container that never exits.
+
+Share files between Bifrost and a sidecar by declaring the volume under `volumes`, mounting it into Bifrost with `volumeMounts`, and mounting it into the sidecar in its own `volumeMounts`.
+
 ---
 
 ## Values Examples

@@ -54,7 +54,7 @@ test_template() {
 
 # 1. Storage Combinations (9 tests)
 echo ""
-echo -e "${CYAN}📦 1/8 - Testing Storage Combinations (9 tests)...${NC}"
+echo -e "${CYAN}📦 1/9 - Testing Storage Combinations (9 tests)...${NC}"
 echo "---------------------------------------------------"
 
 # config=no, logs=no
@@ -126,7 +126,7 @@ test_template "config=postgres, logs=postgres" \
 
 # 2. Vector Store Combinations (6 tests)
 echo ""
-echo -e "${CYAN}🗄️  2/8 - Testing Vector Store Combinations (6 tests)...${NC}"
+echo -e "${CYAN}🗄️  2/9 - Testing Vector Store Combinations (6 tests)...${NC}"
 echo "--------------------------------------------------------"
 
 # Weaviate
@@ -175,7 +175,7 @@ test_template "sqlite + qdrant" \
 
 # 3. Special Configurations (7 tests)
 echo ""
-echo -e "${CYAN}⚙️  3/8 - Testing Special Configurations (7 tests)...${NC}"
+echo -e "${CYAN}⚙️  3/9 - Testing Special Configurations (7 tests)...${NC}"
 echo "-----------------------------------------------------"
 
 # semantic cache: direct mode (dimension: 1, no provider/keys)
@@ -251,7 +251,7 @@ test_template "production-like config" \
 
 # 4. New Property Rendering (Gap 1-8 tests)
 echo ""
-echo -e "${CYAN}🆕 4/8 - Testing New Property Rendering (Gap 1-8)...${NC}"
+echo -e "${CYAN}🆕 4/9 - Testing New Property Rendering (Gap 1-8)...${NC}"
 echo "-----------------------------------------------------"
 
 # Gap 1+2: Client new properties
@@ -337,7 +337,7 @@ test_template "combined: all new Gap 1-9 fields" \
 
 # 5. Plugin Name Validation
 echo ""
-echo -e "${CYAN}🔌 5/8 - Validating Plugin Names Match Go Registry...${NC}"
+echo -e "${CYAN}🔌 5/9 - Validating Plugin Names Match Go Registry...${NC}"
 echo "------------------------------------------------------"
 
 # Verify semantic cache plugin renders with correct name ("semantic_cache", not "semantic_cache")
@@ -366,7 +366,7 @@ fi
 
 # 6. Custom Plugin Placement and Order Rendering
 echo ""
-echo -e "${CYAN}🔧 6/8 - Validating Custom Plugin placement and order Rendering...${NC}"
+echo -e "${CYAN}🔧 6/9 - Validating Custom Plugin placement and order Rendering...${NC}"
 echo "-------------------------------------------------------------------"
 
 # Test custom plugin renders successfully with placement and order
@@ -423,7 +423,7 @@ fi
 
 # 7. Security Context Rendering
 echo ""
-echo -e "${CYAN}🔒 7/8 - Validating OpenShift-compatible Security Contexts...${NC}"
+echo -e "${CYAN}🔒 7/9 - Validating OpenShift-compatible Security Contexts...${NC}"
 echo "----------------------------------------------------------------"
 
 # Images before v1.6.4 use a non-numeric `USER appuser`, so kubelet can only
@@ -492,7 +492,7 @@ fi
 
 # 8. Pod Scheduling: topologySpreadConstraints
 echo ""
-echo -e "${CYAN}🗺️  8/8 - Validating topologySpreadConstraints Rendering...${NC}"
+echo -e "${CYAN}🗺️  8/9 - Validating topologySpreadConstraints Rendering...${NC}"
 echo "----------------------------------------------------------------"
 
 # check_workload renders the chart and runs a python assertion against the Bifrost
@@ -605,6 +605,89 @@ expect_render_failure "topologySpreadConstraints: schema requires topologyKey" \
   --set 'topologySpreadConstraints[0].whenUnsatisfiable=DoNotSchedule'
 
 rm -f /tmp/helm-tsc-values.yaml
+
+# 9. Sidecars: native (sidecars / initContainers with restartPolicy: Always) and regular (extraContainers)
+echo ""
+echo -e "${CYAN}🛵 9/9 - Validating Sidecar Container Rendering...${NC}"
+echo "----------------------------------------------------------------"
+
+cat > /tmp/helm-sidecar-values.yaml << 'VALS'
+sidecars:
+  - name: native-proxy
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep infinity"]
+initContainers:
+  - name: setup
+    image: busybox:1.36
+    command: ["true"]
+extraContainers:
+  - name: classic-shipper
+    image: busybox:1.36
+    command: ["sh", "-c", "sleep infinity"]
+VALS
+
+check_workload "sidecars: no extra or init containers by default" \
+  's = w["spec"]["template"]["spec"]
+assert "initContainers" not in s, "initContainers rendered without being configured: %r" % s.get("initContainers")
+assert [c["name"] for c in s["containers"]] == ["bifrost"], "unexpected containers: %r" % [c["name"] for c in s["containers"]]'
+
+check_workload "sidecars: Deployment renders native sidecar first with restartPolicy Always, then initContainers" \
+  's = w["spec"]["template"]["spec"]
+assert w["kind"] == "Deployment", "expected a Deployment in postgres mode, got %s" % w["kind"]
+assert [(c["name"], c.get("restartPolicy")) for c in s["initContainers"]] == [("native-proxy", "Always"), ("setup", None)], "init containers: %r" % [(c["name"], c.get("restartPolicy")) for c in s["initContainers"]]' \
+  -f /tmp/helm-sidecar-values.yaml \
+  --set storage.mode=postgres \
+  --set postgresql.enabled=true \
+  --set postgresql.auth.password=testpass
+
+check_workload "sidecars: StatefulSet appends extraContainers after bifrost and keeps native sidecar ordering" \
+  's = w["spec"]["template"]["spec"]
+assert w["kind"] == "StatefulSet", "expected a StatefulSet in sqlite+persistence mode, got %s" % w["kind"]
+assert [c["name"] for c in s["containers"]] == ["bifrost", "classic-shipper"], "containers: %r" % [c["name"] for c in s["containers"]]
+assert s["containers"][1]["command"] == ["sh", "-c", "sleep infinity"], "extraContainers entry was altered: %r" % s["containers"][1]
+assert [(c["name"], c.get("restartPolicy")) for c in s["initContainers"]] == [("native-proxy", "Always"), ("setup", None)], "init containers: %r" % [(c["name"], c.get("restartPolicy")) for c in s["initContainers"]]' \
+  -f /tmp/helm-sidecar-values.yaml
+
+check_workload "sidecars: initContainers entry with restartPolicy Always renders on Kubernetes 1.29" \
+  's = w["spec"]["template"]["spec"]
+assert [(c["name"], c.get("restartPolicy")) for c in s["initContainers"]] == [("setup", None), ("late-sidecar", "Always")], "init containers: %r" % [(c["name"], c.get("restartPolicy")) for c in s["initContainers"]]' \
+  --kube-version 1.29.0 \
+  --set 'initContainers[0].name=setup' \
+  --set 'initContainers[0].image=busybox:1.36' \
+  --set 'initContainers[1].name=late-sidecar' \
+  --set 'initContainers[1].image=busybox:1.36' \
+  --set 'initContainers[1].restartPolicy=Always'
+
+check_workload "sidecars: regular initContainers still render on Kubernetes 1.28" \
+  's = w["spec"]["template"]["spec"]
+assert [c["name"] for c in s["initContainers"]] == ["setup"], "init containers: %r" % [c["name"] for c in s["initContainers"]]' \
+  --kube-version 1.28.0 \
+  --set 'initContainers[0].name=setup' \
+  --set 'initContainers[0].image=busybox:1.36'
+
+expect_render_failure "sidecars: native sidecar refused on Kubernetes 1.28" \
+  "needs Kubernetes 1.29 or newer" \
+  --kube-version 1.28.0 \
+  -f /tmp/helm-sidecar-values.yaml
+
+expect_render_failure "sidecars: initContainers restartPolicy Always refused on Kubernetes 1.28" \
+  "needs Kubernetes 1.29 or newer" \
+  --kube-version 1.28.0 \
+  --set 'initContainers[0].name=late-sidecar' \
+  --set 'initContainers[0].image=busybox:1.36' \
+  --set 'initContainers[0].restartPolicy=Always'
+
+expect_render_failure "sidecars: schema rejects a native sidecar with another restartPolicy" \
+  "restartPolicy" \
+  --set 'sidecars[0].name=bad' \
+  --set 'sidecars[0].image=busybox:1.36' \
+  --set 'sidecars[0].restartPolicy=OnFailure'
+
+expect_render_failure "sidecars: schema requires an image on extraContainers" \
+  "image" \
+  --set 'extraContainers[0].name=no-image'
+
+rm -f /tmp/helm-sidecar-values.yaml
 
 # Cleanup
 rm -f /tmp/helm-template-output.yaml
