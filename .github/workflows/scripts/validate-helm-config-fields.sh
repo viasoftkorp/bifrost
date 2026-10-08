@@ -1490,6 +1490,109 @@ assert_field_value 'logs_store.object_storage.project_id' '.logs_store.object_st
 assert_field_value 'logs_store.object_storage.credentials_json' '.logs_store.object_storage.credentials_json' '"/etc/gcs/creds.json"'
 
 ###############################################################################
+# 2.1.44 config.schema.json sync (fields added after helm v2.1.43)
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 2.1.44 config.schema.json sync${NC}"
+
+cat > "$TMPDIR/values-2144-sync.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+    statementTimeout: "90s"
+    idleInTransactionSessionTimeout: "0"
+  logsStore:
+    enabled: true
+    statementTimeout: "60s"
+    idleInTransactionSessionTimeout: "30s"
+    objectStorageExcludeRequestTypes: ["list_models"]
+postgresql:
+  enabled: true
+  auth:
+    password: "test-pass"
+bifrost:
+  encryptionKey: "test-encryption-key-1234567890ab"
+  providers:
+    openai:
+      keys:
+        - name: "openai-key"
+          value: "sk-test"
+          weight: 1
+      ignore_provider_cost: true
+  client:
+    compat:
+      forceReasoningOnlyModelsToResponses: false
+    deleteExpiredVirtualKeys: true
+    mcpServerAuthMode: "both"
+    oauth2ServerConfig:
+      issuerUrl: "https://bifrost.example.com"
+      allowedRedirectUris: ["https://app.example.com/callback"]
+  mcp:
+    enabled: true
+    clientConfigs:
+      - name: "public-mcp"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.example.com/mcp"
+        requirePublicTarget: true
+  governance:
+    virtualKeys:
+      - id: "vk-sync"
+        name: "vk-sync"
+        expires_at: "2026-12-31T23:59:59Z"
+        delete_after_expire: false
+        disable_content_logging: true
+        business_unit_id: "bu-1"
+    routingRules:
+      - id: "rr-sync"
+        name: "rr-sync"
+        cel_expression: "true"
+        targets:
+          - provider: "openai"
+            weight: 1
+        fallbacks:
+          - "anthropic/claude-sonnet-4-5"
+          - provider: "azure"
+            model: "gpt-4o"
+            provider_key_name: "azure-eu"
+  plugins:
+    semanticCache:
+      enabled: true
+      config:
+        dimension: 1
+        cache_tool_call_responses: true
+  scim:
+    enabled: true
+    provider: "generic"
+    config:
+      issuerUrl: "https://idp.example.com"
+      clientId: "bifrost"
+      displayName: "Acme SSO"
+VALS
+
+render_config "$TMPDIR/values-2144-sync.yaml"
+assert_field_value 'config_store.config.statement_timeout' '.config_store.config.statement_timeout' '"90s"'
+assert_field_value 'config_store.config.idle_in_transaction_session_timeout ("0")' '.config_store.config.idle_in_transaction_session_timeout' '"0"'
+assert_field_value 'logs_store.config.statement_timeout' '.logs_store.config.statement_timeout' '"60s"'
+assert_field_value 'logs_store.config.idle_in_transaction_session_timeout' '.logs_store.config.idle_in_transaction_session_timeout' '"30s"'
+assert_field_value 'logs_store.object_storage_exclude_request_types' '.logs_store.object_storage_exclude_request_types' '["list_models"]'
+assert_field_value 'providers.openai.ignore_provider_cost' '.providers.openai.ignore_provider_cost' 'true'
+assert_field_value 'client.compat.force_reasoning_only_models_to_responses' '.client.compat.force_reasoning_only_models_to_responses' 'false'
+assert_field_value 'client.delete_expired_virtual_keys' '.client.delete_expired_virtual_keys' 'true'
+assert_field_value 'client.oauth2_server_config.allowed_redirect_uris' '.client.oauth2_server_config.allowed_redirect_uris' '["https://app.example.com/callback"]'
+assert_field_value 'mcp.client_configs[0].require_public_target' '.mcp.client_configs.[0].require_public_target' 'true'
+assert_field_value 'governance.virtual_keys[0].delete_after_expire' '.governance.virtual_keys.[0].delete_after_expire' 'false'
+assert_field_value 'governance.virtual_keys[0].disable_content_logging' '.governance.virtual_keys.[0].disable_content_logging' 'true'
+assert_field_value 'governance.virtual_keys[0].business_unit_id' '.governance.virtual_keys.[0].business_unit_id' '"bu-1"'
+assert_field_value 'governance.routing_rules[0].fallbacks[0] (string)' '.governance.routing_rules.[0].fallbacks.[0]' '"anthropic/claude-sonnet-4-5"'
+assert_field_value 'governance.routing_rules[0].fallbacks[1].provider_key_name (object)' '.governance.routing_rules.[0].fallbacks.[1].provider_key_name' '"azure-eu"'
+assert_field_value 'plugins: semantic_cache cache_tool_call_responses' '.plugins.[0].config.cache_tool_call_responses' 'true'
+assert_field_value 'scim_config.config.displayName (generic)' '.scim_config.config.displayName' '"Acme SSO"'
+
+###############################################################################
 # Summary
 ###############################################################################
 echo ""
