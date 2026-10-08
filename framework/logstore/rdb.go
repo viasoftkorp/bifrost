@@ -136,6 +136,37 @@ func multiValueDimensionFilterSQL(scalarCol, arrayCol string, ids []string) (str
 	return sql, args
 }
 
+// dimensionMembershipFilterSQL matches logs whose team, customer or business
+// unit is one of ids, on the scalar column or in the JSON-array column, in the
+// dialect's own terms. It mirrors dimensionFanoutFrom: every backend whose
+// rankings fan out over the array column filters on it too, so a ranking row
+// and the logs it links to always agree. Malformed or non-array JSON counts as
+// no array, as it does in the fan-out. A dialect with no fan-out filters on
+// the scalar column alone, matching its rankings.
+func dimensionMembershipFilterSQL(dialect, scalarCol, arrayCol string, ids []string) (string, []interface{}) {
+	switch dialect {
+	case "postgres":
+		return multiValueDimensionFilterSQL(scalarCol, arrayCol, ids)
+	case "clickhouse":
+		// One placeholder per id. GORM expands a bound slice to a bare list only
+		// right after "(": after "[" it wraps it in parentheses, so [?] became
+		// [('a','b')], an array holding one tuple, which ClickHouse rejects.
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+		args := make([]interface{}, 0, len(ids)+1)
+		args = append(args, ids)
+		for _, id := range ids {
+			args = append(args, id)
+		}
+		return fmt.Sprintf("(%s IN ? OR hasAny(JSONExtract(ifNull(%s, ''), 'Array(String)'), [%s]))", scalarCol, arrayCol, placeholders), args
+	case "sqlite":
+		// json_each over the raw column errors on malformed JSON, and SQLite
+		// does not promise to short-circuit a guard written beside it, so the
+		// guard picks what json_each reads instead.
+		return fmt.Sprintf("(%[1]s IN ? OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(%[2]s) AND json_type(%[2]s) = 'array' THEN %[2]s ELSE '[]' END) WHERE value IN ?))", scalarCol, arrayCol), []interface{}{ids, ids}
+	}
+	return scalarCol + " IN ?", []interface{}{ids}
+}
+
 // teamOrBUFanoutFrom is the Postgres implementation behind dimensionFanoutFrom
 // (dialectsql.go): a FROM subquery (aliased AS logs) that fans each log row out
 // to one row per associated team / business unit / customer, exposing derived
@@ -379,20 +410,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("routing_rule_id IN ?", filters.RoutingRuleIDs)
 	}
 	if len(filters.TeamIDs) > 0 {
-		if s.db.Dialector.Name() == "postgres" {
-			sql, args := multiValueDimensionFilterSQL("team_id", "team_ids", filters.TeamIDs)
-			baseQuery = baseQuery.Where(sql, args...)
-		} else {
-			baseQuery = baseQuery.Where("team_id IN ?", filters.TeamIDs)
-		}
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "team_id", "team_ids", filters.TeamIDs)
+		baseQuery = baseQuery.Where(sql, args...)
 	}
 	if len(filters.CustomerIDs) > 0 {
-		if s.db.Dialector.Name() == "postgres" {
-			sql, args := multiValueDimensionFilterSQL("customer_id", "customer_ids", filters.CustomerIDs)
-			baseQuery = baseQuery.Where(sql, args...)
-		} else {
-			baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
-		}
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "customer_id", "customer_ids", filters.CustomerIDs)
+		baseQuery = baseQuery.Where(sql, args...)
 	}
 	if len(filters.UserIDs) > 0 {
 		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
@@ -403,12 +426,8 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("project_id IN ?", filters.ProjectIDs)
 	}
 	if len(filters.BusinessUnitIDs) > 0 {
-		if s.db.Dialector.Name() == "postgres" {
-			sql, args := multiValueDimensionFilterSQL("business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)
-			baseQuery = baseQuery.Where(sql, args...)
-		} else {
-			baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
-		}
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)
+		baseQuery = baseQuery.Where(sql, args...)
 	}
 	if len(filters.UserAgents) > 0 {
 		baseQuery = baseQuery.Where("user_agent IN ?", filters.UserAgents)
@@ -5524,22 +5543,8 @@ func (s *RDBLogStore) applyAgentHistoryFilters(query *gorm.DB, filter AgentLogHi
 		if len(dimension.values) == 0 {
 			continue
 		}
-		if s.db.Dialector.Name() == "postgres" {
-			sql, args := multiValueDimensionFilterSQL(dimension.scalar, dimension.array, dimension.values)
-			query = query.Where(sql, args...)
-		} else if s.db.Dialector.Name() == "clickhouse" {
-			query = query.Where(
-				dimension.scalar+" IN ? OR hasAny(JSONExtract("+dimension.array+", 'Array(String)'), ?)",
-				dimension.values,
-				dimension.values,
-			)
-		} else {
-			query = query.Where(
-				dimension.scalar+" IN ? OR EXISTS (SELECT 1 FROM json_each("+dimension.array+") WHERE value IN ?)",
-				dimension.values,
-				dimension.values,
-			)
-		}
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), dimension.scalar, dimension.array, dimension.values)
+		query = query.Where(sql, args...)
 	}
 	if filter.StartTime != nil {
 		query = query.Where("timestamp >= ?", *filter.StartTime)
