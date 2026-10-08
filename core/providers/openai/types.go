@@ -153,6 +153,32 @@ func (r *OpenAIEmbeddingRequest) SetExtraParams(params map[string]interface{}) {
 	r.EmbeddingParameters.ExtraParams = params
 }
 
+// OpenAIDecisionRequest is the body of OpenAI's POST /v1/decisions. Its input
+// and questions are the shared decision types, whose JSON is OpenAI's: built
+// by ToOpenAIDecisionRequest, they carry only text OpenAI accepts.
+type OpenAIDecisionRequest struct {
+	Model            string                     `json:"model"`
+	Input            schemas.DecisionInput      `json:"input"`
+	Questions        []schemas.DecisionQuestion `json:"questions"`
+	SafetyIdentifier *string                    `json:"safety_identifier,omitempty"`
+	ExtraParams      map[string]interface{}     `json:"-"` // native extensions, merged onto the wire under the passthrough flag
+}
+
+// GetExtraParams implements providerUtils.RequestBodyWithExtraParams.
+func (r *OpenAIDecisionRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// OpenAIDecisionResponse is the body of a successful POST /v1/decisions
+// response, OpenAI's Decision object: it has no id. Answers are the shared
+// decision answers, whose JSON is OpenAI's; one of a type Bifrost does not
+// model is kept verbatim.
+type OpenAIDecisionResponse struct {
+	Model   string                          `json:"model"`
+	Answers []schemas.DecisionAnswer        `json:"answers"`
+	Usage   *schemas.ResponsesResponseUsage `json:"usage,omitempty"`
+}
+
 // OpenAIRerankRequest represents an OpenAI-compatible rerank request
 type OpenAIRerankRequest struct {
 	Model           string                   `json:"model"`
