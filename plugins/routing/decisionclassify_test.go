@@ -421,8 +421,9 @@ func TestClassifyDecisionComplexityUsesConfiguredModel(t *testing.T) {
 }
 
 // TestClassifyDecisionComplexityNimbleCriteriaAsText pins that a Nimble model,
-// whose server accepts only string descriptions, receives each tier's guidance as
-// one text description, while other models keep the structured object.
+// whose server accepts only string descriptions, and an OpenAI decisions model
+// receive each tier's guidance as one text description, while other models keep
+// the structured object.
 func TestClassifyDecisionComplexityNimbleCriteriaAsText(t *testing.T) {
 	capture := func(decision *complexity.DecisionConfig) map[string]interface{} {
 		var captured *schemas.BifrostDecisionRequest
@@ -444,8 +445,16 @@ func TestClassifyDecisionComplexityNimbleCriteriaAsText(t *testing.T) {
 		assert.Contains(t, text, "\nExamples:\n- "+defaults.Examples[0])
 	}
 
+	// OpenAI's Decisions API takes a choice description as text, so its
+	// decisions models get the same readable rendering; its chat models, which
+	// answer through emulation, keep the structured object.
+	_, isText := capture(&complexity.DecisionConfig{Provider: schemas.OpenAI, Model: "gpt-6-luna"})[complexity.TierComplex].(string)
+	assert.True(t, isText, "an OpenAI decisions model must receive string criteria")
+	_, isObject := capture(&complexity.DecisionConfig{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})[complexity.TierComplex].(map[string]interface{})
+	assert.True(t, isObject, "an OpenAI chat model keeps object criteria")
+
 	criteria := capture(nil)
-	_, isObject := criteria[complexity.TierComplex].(map[string]interface{})
+	_, isObject = criteria[complexity.TierComplex].(map[string]interface{})
 	assert.True(t, isObject, "the default Jev model keeps object criteria")
 }
 

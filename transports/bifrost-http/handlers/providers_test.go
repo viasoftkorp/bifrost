@@ -1119,6 +1119,37 @@ func TestListModels_AppliesQueryAndLimitAfterFiltering(t *testing.T) {
 	}
 }
 
+// TestListModels_DecisionsKeepsOnlyDecisionModels pins that decisions=true
+// lists only models the provider would serve a decision request for, with the
+// total counted after filtering.
+func TestListModels_DecisionsKeepsOnlyDecisionModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	models := []string{"gpt-4o", "gpt-6-luna", "gpt-6-luna-2026-09-01"}
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=openai&decisions=true&limit=10")
+
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	if resp.Total != 2 || !slices.Equal(names, []string{"gpt-6-luna", "gpt-6-luna-2026-09-01"}) {
+		t.Fatalf("expected only the decision models, got total=%d %v", resp.Total, names)
+	}
+}
+
 func TestListModels_MarksDeprecatedModelsWithoutFiltering(t *testing.T) {
 	SetLogger(&mockLogger{})
 

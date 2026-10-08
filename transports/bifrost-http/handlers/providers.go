@@ -868,6 +868,9 @@ type modelListQuery struct {
 	HideDeprecated bool
 	// IncludeDeprecated is the caller's explicit opt-out of HideDeprecated.
 	IncludeDeprecated bool
+	// Decisions keeps only models that serve decisions natively, by the same
+	// capability rule the provider applies at request time.
+	Decisions bool
 	// VK-based filtering: populated when a virtual key is found in request headers.
 	// HasVKFilter=true restricts providers/models to those allowed by the VK.
 	HasVKFilter bool
@@ -891,6 +894,8 @@ type listedModel struct {
 //   - offset: Number of results to skip (for pagination)
 //   - include_deprecated: If true, list deprecated models even when nothing is searched for.
 //     Without it, deprecated models appear only in a search (`query`), sorted below live ones.
+//   - decisions: If true, list only models whose datasheet (or built-in default) marks them as
+//     serving decisions natively, such as OpenAI's gpt-6-luna.
 //
 // Request headers:
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
@@ -1089,6 +1094,14 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 	}
 }
 
+// supportsDecisions reports whether the model serves decisions natively, using
+// the rule the provider's Decision call gates on, so the listing never offers a
+// model the request would then reject.
+func supportsDecisions(provider schemas.ModelProvider, model string) bool {
+	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(schemas.DefaultSupportsDecisions(model))
+}
+
+// isModelDeprecated reports whether the catalog marks the model as deprecated.
 func (h *ProviderHandler) isModelDeprecated(model string, provider schemas.ModelProvider) bool {
 	modelCatalog := h.inMemoryStore.ModelCatalog
 	if modelCatalog == nil {
@@ -1113,6 +1126,7 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 		Unfiltered: string(queryArgs.Peek("unfiltered")) == "true",
 	}
 	query.IncludeDeprecated = string(queryArgs.Peek("include_deprecated")) == "true"
+	query.Decisions = string(queryArgs.Peek("decisions")) == "true"
 
 	if keysRaw := queryArgs.Peek("keys"); len(keysRaw) > 0 {
 		keyIDs := strings.Split(string(keysRaw), ",")
@@ -1182,6 +1196,10 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 	models := make([]listedModel, 0)
 	for _, provider := range providers {
 		models = append(models, h.listManagementModelsForProvider(provider, query)...)
+	}
+
+	if query.Decisions {
+		models = slices.DeleteFunc(models, func(m listedModel) bool { return !supportsDecisions(m.Provider, m.Name) })
 	}
 
 	for i := range models {
