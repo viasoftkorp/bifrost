@@ -723,25 +723,38 @@ func BenchmarkSingleFullBodyParse(b *testing.B) {
 }
 
 // TestSDKFidelityPrepareDecisionRequestNullState pins #7599 on the Bifrost-native
-// /v1/decisions route: {"state": null} is a valid decision input (TypeSafe's
-// EntryType allows null) and must not be confused with an absent state, which
-// stays a 400.
+// /v1/decisions route: {"state": null} is a valid map-form decision input
+// (TypeSafe's EntryType allows null) and must not be confused with an absent
+// state, which stays a 400. The normalized body follows the same rule for
+// "input".
 func TestSDKFidelityPrepareDecisionRequestNullState(t *testing.T) {
 	questions := `"questions":{"q":{"kind":"noul","instructions":"Evaluate this state."}}`
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.SetBodyString(`{"model":"typesafe/jev-1.13.0","state":null,` + questions + `}`)
-	_, req, err := prepareDecisionRequest(ctx, nil)
+	req, err := prepareMapFormDecisionRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("null state must be accepted, got %v", err)
 	}
-	if req.State != nil {
-		t.Errorf("null state must stay null, got %#v", req.State)
+	if !req.Input.IsEmpty() {
+		t.Errorf("null state must stay null, got %#v", req.Input)
 	}
 
 	missing := &fasthttp.RequestCtx{}
 	missing.Request.SetBodyString(`{"model":"typesafe/jev-1.13.0",` + questions + `}`)
-	if _, _, err := prepareDecisionRequest(missing, nil); err == nil || !strings.Contains(err.Error(), "state is required") {
+	if _, err := prepareMapFormDecisionRequest(missing, nil); err == nil || !strings.Contains(err.Error(), "state is required") {
 		t.Fatalf("absent state must still be rejected, got %v", err)
+	}
+
+	listQuestions := `"questions":[{"type":"predicate","name":"q","instructions":"Evaluate this input."}]`
+	nullInput := &fasthttp.RequestCtx{}
+	nullInput.Request.SetBodyString(`{"model":"typesafe/jev-1.13.0","input":null,` + listQuestions + `}`)
+	if req, _, err := prepareDecisionRequest(nullInput, nil); err != nil || !req.Input.IsEmpty() {
+		t.Fatalf("null input must be accepted and stay null, got %v %#v", err, req)
+	}
+	missingInput := &fasthttp.RequestCtx{}
+	missingInput.Request.SetBodyString(`{"model":"typesafe/jev-1.13.0",` + listQuestions + `}`)
+	if _, _, err := prepareDecisionRequest(missingInput, nil); err == nil || !strings.Contains(err.Error(), "input is required") {
+		t.Fatalf("absent input must be rejected, got %v", err)
 	}
 }

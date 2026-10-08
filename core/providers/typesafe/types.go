@@ -22,6 +22,25 @@ type TypesafeQuestion struct {
 	Criteria     interface{} `json:"criteria,omitempty"`     // map for noul/choice, ordered array for score; null descriptions allowed
 }
 
+// UnmarshalJSON decodes a question, reading "kind" as the type when "type" is
+// absent: the deprecated /v1/decisions map body writes this same question
+// with "kind", and it is decoded through this type.
+func (q *TypesafeQuestion) UnmarshalJSON(data []byte) error {
+	type alias TypesafeQuestion
+	var decoded struct {
+		alias
+		Kind string `json:"kind"`
+	}
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*q = TypesafeQuestion(decoded.alias)
+	if q.Type == "" {
+		q.Type = decoded.Kind
+	}
+	return nil
+}
+
 // TypesafeDecisionRequest is the body of POST /v1/systemone.
 type TypesafeDecisionRequest struct {
 	State       interface{}                 `json:"state"`
@@ -97,6 +116,24 @@ type TypesafeAnswer struct {
 	Abstention          *string         `json:"abstention,omitempty"`
 	AbstentionThreshold *float64        `json:"abstention_threshold,omitempty"`
 	LowConfidence       *bool           `json:"low_confidence,omitempty"`
+
+	raw json.RawMessage // verbatim answer from another provider that this shape cannot express
+}
+
+// MarshalJSON re-emits an answer this shape cannot express verbatim and
+// otherwise marshals the typed fields.
+func (a TypesafeAnswer) MarshalJSON() ([]byte, error) {
+	if a.raw != nil {
+		return a.raw, nil
+	}
+	type alias TypesafeAnswer
+	return sonic.Marshal(alias(a))
+}
+
+// RawJSON returns the verbatim body of an answer this shape cannot express, or
+// nil for a typed one.
+func (a TypesafeAnswer) RawJSON() json.RawMessage {
+	return a.raw
 }
 
 // TypesafeUsage reports token consumption. Typesafe bills input tokens only.

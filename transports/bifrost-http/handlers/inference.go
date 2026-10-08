@@ -219,10 +219,11 @@ var rerankParamsKnownFields = map[string]bool{
 }
 
 var decisionParamsKnownFields = map[string]bool{
-	"model":     true,
-	"state":     true,
-	"questions": true,
-	"fallbacks": true,
+	"model":             true,
+	"input":             true,
+	"questions":         true,
+	"safety_identifier": true,
+	"fallbacks":         true,
 }
 
 var ocrParamsKnownFields = map[string]bool{
@@ -644,8 +645,9 @@ type RerankRequest struct {
 
 // DecisionHandlerRequest is a bifrost decision request
 type DecisionHandlerRequest struct {
-	State     interface{}                         `json:"state"`
-	Questions map[string]schemas.DecisionQuestion `json:"questions"`
+	Input            schemas.DecisionInput      `json:"input"`
+	Questions        []schemas.DecisionQuestion `json:"questions"`
+	SafetyIdentifier *string                    `json:"safety_identifier,omitempty"`
 	BifrostParams
 }
 
@@ -1450,33 +1452,44 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-// prepareDecisionRequest prepares a BifrostDecisionRequest from the HTTP request body
-func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*DecisionHandlerRequest, *schemas.BifrostDecisionRequest, error) {
-	req, base, err := prepareRequest[DecisionHandlerRequest](ctx, config, decisionParamsKnownFields)
-	if err != nil {
-		return nil, nil, err
+// prepareDecisionRequest prepares a BifrostDecisionRequest from the HTTP
+// request body. A body that does not decode as the normalized request, or that
+// carries "state", is read as the deprecated map form instead; mapForm reports
+// which, so the response can be rendered the same way.
+func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (req *schemas.BifrostDecisionRequest, mapForm bool, err error) {
+	body := ctx.PostBody()
+	hasState, hasInput := gjson.GetBytes(body, "state").Exists(), gjson.GetBytes(body, "input").Exists()
+	if hasState && hasInput {
+		return nil, false, fmt.Errorf("decision request carries both input and the deprecated state; send input")
 	}
-	// An explicit null state is SDK-valid and forwarded; only an absent key is
-	// rejected here.
-	if req.State == nil && !gjson.GetBytes(ctx.PostBody(), "state").Exists() {
-		return nil, nil, fmt.Errorf("state is required for decision")
+	handlerReq, base, decodeErr := prepareRequest[DecisionHandlerRequest](ctx, config, decisionParamsKnownFields)
+	if decodeErr != nil || hasState {
+		req, err := prepareMapFormDecisionRequest(ctx, config)
+		return req, true, err
 	}
-	if len(req.Questions) == 0 {
-		return nil, nil, fmt.Errorf("questions are required for decision")
+	// An explicit null input is forwarded as a null state; only an absent key
+	// is rejected here.
+	if !hasInput {
+		return nil, false, fmt.Errorf("input is required for decision")
 	}
-	return req, &schemas.BifrostDecisionRequest{
-		Provider:    base.Provider,
-		Model:       base.ModelName,
-		State:       req.State,
-		Questions:   req.Questions,
-		Fallbacks:   base.Fallbacks,
-		ExtraParams: base.ExtraParams,
-	}, nil
+	if len(handlerReq.Questions) == 0 {
+		return nil, false, fmt.Errorf("questions are required for decision")
+	}
+	return &schemas.BifrostDecisionRequest{
+		Provider:         base.Provider,
+		Model:            base.ModelName,
+		Input:            handlerReq.Input,
+		Questions:        handlerReq.Questions,
+		SafetyIdentifier: handlerReq.SafetyIdentifier,
+		Fallbacks:        base.Fallbacks,
+		ExtraParams:      base.ExtraParams,
+	}, false, nil
 }
 
-// evaluation handles POST /v1/decisions - Process decision requests
+// evaluation handles POST /v1/decisions - Process decision requests. A
+// deprecated map-form request is answered in the map form.
 func (h *CompletionHandler) evaluation(ctx *fasthttp.RequestCtx) {
-	_, bifrostDecisionReq, err := prepareDecisionRequest(ctx, h.config)
+	bifrostDecisionReq, mapForm, err := prepareDecisionRequest(ctx, h.config)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1505,6 +1518,10 @@ func (h *CompletionHandler) evaluation(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Send successful response
+	if mapForm {
+		SendJSON(ctx, toDecisionMapFormResponse(resp))
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
