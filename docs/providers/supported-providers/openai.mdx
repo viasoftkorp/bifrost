@@ -674,7 +674,9 @@ What the request carries beyond OpenAI's shape is converted before it is sent, s
 | A predicate's `criteria` | appended to the question's instructions |
 | A level without a `label` | labelled by its index (`"0"`, `"1"`, ...) |
 
-Input messages, including `input_image` parts, are sent unchanged. A request with no `input` is rejected with a `400` for the OpenAI attempt, since OpenAI requires one; a configured fallback can still serve it.
+Input messages, including `input_image` parts, are sent unchanged. A request with no `input` is rejected with a `400` for the OpenAI attempt, since OpenAI requires one; a configured fallback can still serve it, and if every fallback fails too, the response carries the first attempt's error.
+
+OpenAI SDKs can call the same endpoint through Bifrost at `/openai/v1/decisions`; see [OpenAI SDK](/integrations/openai-sdk/overview#decisions-api).
 
 **Endpoint**: `POST /v1/decisions`
 

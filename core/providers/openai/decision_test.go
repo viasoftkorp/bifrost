@@ -244,3 +244,122 @@ func TestOpenAIProviderDecisionGating(t *testing.T) {
 		assert.True(t, strings.HasPrefix(call, "/v1/decisions "), call)
 	}
 }
+
+// TestOpenAIDecisionRequestKeepsUnknownFields pins that a top-level field the
+// request does not model is kept, compacted, for the provider wire, and that
+// the route's fallbacks stay off it.
+func TestOpenAIDecisionRequestKeepsUnknownFields(t *testing.T) {
+	var request OpenAIDecisionRequest
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"model": "gpt-6-luna",
+		"input": "state",
+		"questions": [{"type": "predicate", "instructions": "Q?"}],
+		"fallbacks": ["typesafe/jev-1.13.0"],
+		"future_option": { "mode": "strict" }
+	}`), &request))
+	assert.Equal(t, []string{"typesafe/jev-1.13.0"}, request.Fallbacks)
+	assert.Equal(t, json.RawMessage(`{"mode":"strict"}`), request.ExtraParams["future_option"])
+	assert.NotContains(t, request.ExtraParams, "fallbacks")
+
+	upstream, err := ToOpenAIDecisionRequest(request.ToBifrostDecisionRequest())
+	require.NoError(t, err)
+	body, err := json.Marshal(upstream)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "fallbacks", "fallbacks are Bifrost routing, never sent to OpenAI")
+}
+
+// TestOpenAIDecisionRequestToBifrost pins the route's request conversion: the
+// input and questions are copied as they are, and a model without a provider
+// prefix is OpenAI's.
+func TestOpenAIDecisionRequestToBifrost(t *testing.T) {
+	request := &OpenAIDecisionRequest{
+		Model:            "gpt-6-luna",
+		Input:            schemas.DecisionInput{Text: schemas.Ptr("state")},
+		Questions:        []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Instructions: schemas.NewDecisionText("Q?")}},
+		SafetyIdentifier: schemas.Ptr("user-1"),
+	}
+	converted := request.ToBifrostDecisionRequest()
+	assert.Equal(t, schemas.OpenAI, converted.Provider)
+	assert.Equal(t, "gpt-6-luna", converted.Model)
+	assert.Equal(t, request.Input, converted.Input)
+	assert.Equal(t, request.Questions, converted.Questions)
+	assert.Equal(t, "user-1", *converted.SafetyIdentifier)
+
+	request.Model = "typesafe/jev-1.13.0"
+	converted = request.ToBifrostDecisionRequest()
+	assert.Equal(t, schemas.Typesafe, converted.Provider)
+	assert.Equal(t, "jev-1.13.0", converted.Model)
+}
+
+// TestToOpenAIDecisionResponse pins the route's rebuilt response: OpenAI's
+// Decision object, so no id even when the serving provider returned one,
+// answers as they are, usage under OpenAI's names with Laya's fields, Laya's
+// routing, and an empty list rather than null when there are no answers.
+func TestToOpenAIDecisionResponse(t *testing.T) {
+	truncated := true
+	response := ToOpenAIDecisionResponse(&schemas.BifrostDecisionResponse{
+		ID:      "dec_1",
+		Model:   "jev-1.13.0",
+		Answers: []schemas.DecisionAnswer{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Probability: schemas.Ptr(0.3)}},
+		Usage:   &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12, Truncated: &truncated},
+		Routing: json.RawMessage(`{"model":"english"}`),
+	})
+	body, err := json.Marshal(response)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"model": "jev-1.13.0",
+		"answers": [{"type": "predicate", "name": "q", "probability": 0.3}],
+		"usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12, "truncated": true},
+		"routing": {"model": "english"}
+	}`, string(body))
+
+	empty, err := json.Marshal(ToOpenAIDecisionResponse(&schemas.BifrostDecisionResponse{Model: "m"}))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"model": "m", "answers": []}`, string(empty))
+	assert.Nil(t, ToOpenAIDecisionResponse(nil))
+}
+
+// TestOpenAIDecisionAnswerWire pins OpenAI's answer shape on the
+// /openai/v1/decisions route: name is always present, null for an unnamed
+// question (a refusal included), and written after type; a named answer and an
+// answer of a type Bifrost does not model are written as they are. The
+// payloads are synthetic.
+func TestOpenAIDecisionAnswerWire(t *testing.T) {
+	var unknown schemas.DecisionAnswer
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"ranking","order":["a","b"]}`), &unknown))
+	for name, tc := range map[string]struct {
+		answer schemas.DecisionAnswer
+		want   string
+	}{
+		"named":   {schemas.DecisionAnswer{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Probability: schemas.Ptr(0.5)}, `{"type":"predicate","name":"q","probability":0.5}`},
+		"unnamed": {schemas.DecisionAnswer{Type: schemas.DecisionTypePredicate, Probability: schemas.Ptr(0.5)}, `{"type":"predicate","name":null,"probability":0.5}`},
+		"refusal": {schemas.DecisionAnswer{Type: schemas.DecisionTypeRefusal}, `{"type":"refusal","name":null}`},
+		"unknown": {unknown, `{"type":"ranking","order":["a","b"]}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body, err := json.Marshal(OpenAIDecisionAnswer{DecisionAnswer: tc.answer})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(body))
+		})
+	}
+}
+
+// TestOpenAIDecisionUsageKeepsTokenDetails pins that OpenAI's token details,
+// cached input tokens among them, survive normalization and rendering back.
+func TestOpenAIDecisionUsageKeepsTokenDetails(t *testing.T) {
+	var usage OpenAIDecisionUsage
+	require.NoError(t, json.Unmarshal([]byte(`{"input_tokens":120,"input_tokens_details":{"cached_tokens":30},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":120}`), &usage))
+	normalized := usage.ToBifrostLLMUsage()
+	require.NotNil(t, normalized.PromptTokensDetails)
+	assert.Equal(t, 30, normalized.PromptTokensDetails.CachedReadTokens)
+
+	body, err := json.Marshal(toOpenAIDecisionUsage(normalized))
+	require.NoError(t, err)
+	var wire map[string]any
+	require.NoError(t, json.Unmarshal(body, &wire))
+	assert.Equal(t, 30.0, wire["input_tokens_details"].(map[string]any)["cached_tokens"])
+
+	plain, err := json.Marshal(toOpenAIDecisionUsage(&schemas.BifrostLLMUsage{PromptTokens: 3, TotalTokens: 3}))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"input_tokens":3,"output_tokens":0,"total_tokens":3}`, string(plain), "absent details are left out")
+}

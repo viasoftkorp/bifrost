@@ -131,7 +131,7 @@ Standard fallback syntax applies:
 
 ## Validation
 
-Requests are validated before dispatch and rejected with a `400` rather than silently approximated: unsupported question types, a choice question without choices, score levels outside what the model accepts, and repeated question names. A detail one model cannot read (an image or audio part for a TypeSafe model) fails only that attempt.
+Requests are validated before dispatch and rejected with a `400` rather than silently approximated: unsupported question types, a choice question without choices, score levels outside what the model accepts, and repeated question names. A detail one model cannot read (an image or audio part for a TypeSafe model) fails only that attempt, so a configured fallback can serve the request; if every fallback fails too, the response carries the first attempt's error.
 
 ## Map Form (Deprecated)
 
@@ -171,6 +171,10 @@ The response keys answers by question name, each with a `kind` and a `value`:
 ```
 
 A body that does not read as the request above, or that carries `state`, is read as the map form; a body with both `state` and `input` is rejected with a `400`.
+
+<Note>
+OpenAI SDKs can send their own Decisions request to `POST /openai/v1/decisions` (see [OpenAI SDK](/integrations/openai-sdk/overview#decisions-api)). The body is the request above, and every decision model can answer it.
+</Note>
 
 <Note>
 TypeSafe's native API is also available 1:1 at `POST /typesafe/v1/systemone` - see the [TypeSafe provider page](/providers/supported-providers/typesafe) for the mapping between the two.

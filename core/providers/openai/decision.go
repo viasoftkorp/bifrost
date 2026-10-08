@@ -127,7 +127,8 @@ func (response *OpenAIDecisionResponse) ToBifrostDecisionResponse(request *schem
 		return nil, fmt.Errorf("OpenAI returned %d decision answers for %d questions", len(response.Answers), len(request.Questions))
 	}
 	answers := make([]schemas.DecisionAnswer, len(response.Answers))
-	for i, answer := range response.Answers {
+	for i, wire := range response.Answers {
+		answer := wire.DecisionAnswer
 		question := request.Questions[i]
 		if answer.Name != nil && question.Name != nil && *answer.Name != *question.Name {
 			return nil, fmt.Errorf("OpenAI decision answer %d is named %q; expected %q", i, *answer.Name, *question.Name)
@@ -150,6 +151,44 @@ func (response *OpenAIDecisionResponse) ToBifrostDecisionResponse(request *schem
 		Answers: answers,
 		Usage:   response.Usage.ToBifrostLLMUsage(),
 	}, nil
+}
+
+// ToBifrostDecisionRequest converts a request received on the
+// /openai/v1/decisions route into the normalized shape. The input and
+// questions are already the shared types, so they are copied as they are. A
+// model without a provider prefix is OpenAI's, since this is OpenAI's route.
+func (r *OpenAIDecisionRequest) ToBifrostDecisionRequest() *schemas.BifrostDecisionRequest {
+	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
+	return &schemas.BifrostDecisionRequest{
+		Provider:         provider,
+		Model:            model,
+		Input:            r.Input,
+		Questions:        r.Questions,
+		SafetyIdentifier: r.SafetyIdentifier,
+		Fallbacks:        schemas.ParseFallbacks(r.Fallbacks),
+		ExtraParams:      r.ExtraParams,
+	}
+}
+
+// ToOpenAIDecisionResponse renders a normalized decision response in OpenAI's
+// shape for the /openai/v1/decisions route, whichever provider answered, so
+// what plugins did to the response is what the client receives. Unnamed
+// answers carry name null as OpenAI's do; Laya's answer, usage, and routing
+// fields come along when Laya answered, as fields OpenAI clients ignore.
+func ToOpenAIDecisionResponse(response *schemas.BifrostDecisionResponse) *OpenAIDecisionResponse {
+	if response == nil {
+		return nil
+	}
+	answers := make([]OpenAIDecisionAnswer, len(response.Answers))
+	for i, answer := range response.Answers {
+		answers[i] = OpenAIDecisionAnswer{DecisionAnswer: answer}
+	}
+	return &OpenAIDecisionResponse{
+		Model:   response.Model,
+		Answers: answers,
+		Usage:   toOpenAIDecisionUsage(response.Usage),
+		Routing: response.Routing,
+	}
 }
 
 // HandleOpenAIDecisionRequest sends a decision request to an OpenAI-compatible

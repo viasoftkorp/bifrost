@@ -1,0 +1,57 @@
+# OpenAI Integration - Decisions schemas
+
+OpenAIDecisionResponse:
+  type: object
+  description: OpenAI's Decision object. Every model's answers are returned in this shape; it carries no id.
+  required:
+    - model
+    - answers
+  properties:
+    model:
+      type: string
+      description: Model that performed the decision
+    answers:
+      type: array
+      description: One answer per question, in question order
+      items:
+        $ref: '../../inference/decisions.yaml#/DecisionAnswer'
+    usage:
+      type: object
+      properties:
+        input_tokens:
+          type: integer
+        input_tokens_details:
+          type: object
+          description: Present when the provider reports it
+          properties:
+            cached_tokens:
+              type: integer
+            cache_write_tokens:
+              type: integer
+        output_tokens:
+          type: integer
+        output_tokens_details:
+          type: object
+          description: Present when the provider reports it
+          properties:
+            reasoning_tokens:
+              type: integer
+        total_tokens:
+          type: integer
+        state_tokens:
+          type: integer
+          description: Laya only
+        state_tokens_dropped:
+          type: integer
+          description: Laya only
+        truncated:
+          type: boolean
+          description: Laya only
+        truncated_questions:
+          type: array
+          items:
+            type: string
+          description: Laya only
+    routing:
+      type: object
+      description: Laya only. The checkpoint that answered and why, passed through untouched

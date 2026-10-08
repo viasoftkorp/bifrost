@@ -153,15 +153,56 @@ func (r *OpenAIEmbeddingRequest) SetExtraParams(params map[string]interface{}) {
 	r.EmbeddingParameters.ExtraParams = params
 }
 
-// OpenAIDecisionRequest is the body of OpenAI's POST /v1/decisions. Its input
-// and questions are the shared decision types, whose JSON is OpenAI's: built
-// by ToOpenAIDecisionRequest, they carry only text OpenAI accepts.
+// OpenAIDecisionRequest is the body of OpenAI's POST /v1/decisions, and of
+// Bifrost's /openai/v1/decisions route. Its input and questions are the shared
+// decision types, whose JSON is OpenAI's: built by ToOpenAIDecisionRequest,
+// they carry only text OpenAI accepts. A top-level field this type does not
+// model is kept in ExtraParams, so a field a newer SDK sends reaches the
+// provider rather than being dropped.
 type OpenAIDecisionRequest struct {
 	Model            string                     `json:"model"`
 	Input            schemas.DecisionInput      `json:"input"`
 	Questions        []schemas.DecisionQuestion `json:"questions"`
 	SafetyIdentifier *string                    `json:"safety_identifier,omitempty"`
-	ExtraParams      map[string]interface{}     `json:"-"` // native extensions, merged onto the wire under the passthrough flag
+	Fallbacks        []string                   `json:"fallbacks,omitempty"` // Bifrost routing only; never sent upstream
+	ExtraParams      map[string]interface{}     `json:"-"`                   // native extensions, merged onto the wire under the passthrough flag
+}
+
+// openAIDecisionRequestKnownFields are the top-level keys OpenAIDecisionRequest
+// models; any other key is kept in ExtraParams.
+var openAIDecisionRequestKnownFields = map[string]bool{
+	"model":             true,
+	"input":             true,
+	"questions":         true,
+	"safety_identifier": true,
+	"fallbacks":         true,
+}
+
+// UnmarshalJSON decodes the modelled fields and keeps every other top-level
+// field, compacted, in ExtraParams.
+func (r *OpenAIDecisionRequest) UnmarshalJSON(data []byte) error {
+	type alias OpenAIDecisionRequest
+	if err := sonic.Unmarshal(data, (*alias)(r)); err != nil {
+		return err
+	}
+	r.ExtraParams = nil
+	gjson.ParseBytes(data).ForEach(func(key, value gjson.Result) bool {
+		name := key.String()
+		if openAIDecisionRequestKnownFields[name] {
+			return true
+		}
+		if r.ExtraParams == nil {
+			r.ExtraParams = make(map[string]interface{})
+		}
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, []byte(value.Raw)); err == nil {
+			r.ExtraParams[name] = json.RawMessage(compact.Bytes())
+		} else {
+			r.ExtraParams[name] = json.RawMessage(value.Raw)
+		}
+		return true
+	})
+	return nil
 }
 
 // GetExtraParams implements providerUtils.RequestBodyWithExtraParams.
@@ -172,11 +213,90 @@ func (r *OpenAIDecisionRequest) GetExtraParams() map[string]interface{} {
 // OpenAIDecisionResponse is the body of a successful POST /v1/decisions
 // response, OpenAI's Decision object: it has no id. Answers are the shared
 // decision answers, whose JSON is OpenAI's; one of a type Bifrost does not
-// model is kept verbatim.
+// model is kept verbatim. Routing, like the Laya fields on answers and usage,
+// is set only when a Laya model answered on the /openai/v1/decisions route.
 type OpenAIDecisionResponse struct {
-	Model   string                          `json:"model"`
-	Answers []schemas.DecisionAnswer        `json:"answers"`
-	Usage   *schemas.ResponsesResponseUsage `json:"usage,omitempty"`
+	Model   string                 `json:"model"`
+	Answers []OpenAIDecisionAnswer `json:"answers"`
+	Usage   *OpenAIDecisionUsage   `json:"usage,omitempty"`
+	Routing json.RawMessage        `json:"routing,omitempty"`
+}
+
+// OpenAIDecisionAnswer is a decision answer on OpenAI's wire, where name is
+// always present and null for an unnamed question. The shared answer omits an
+// absent name, which is the normalized /v1/decisions shape.
+type OpenAIDecisionAnswer struct {
+	schemas.DecisionAnswer
+}
+
+// MarshalJSON writes the answer with name set to null when the question had
+// none. An answer of a type Bifrost does not model is written verbatim.
+func (a OpenAIDecisionAnswer) MarshalJSON() ([]byte, error) {
+	if a.Name != nil || !a.IsRecognized() {
+		return a.DecisionAnswer.MarshalJSON()
+	}
+	type answer schemas.DecisionAnswer
+	return sonic.Marshal(struct {
+		Type schemas.DecisionType `json:"type"`
+		Name *string              `json:"name"`
+		answer
+	}{Type: a.Type, answer: answer(a.DecisionAnswer)})
+}
+
+// OpenAIDecisionUsage is the token usage of a decisions response. The token
+// details (cached input tokens among them) are OpenAI's and are kept both ways.
+type OpenAIDecisionUsage struct {
+	InputTokens         int                                    `json:"input_tokens"`
+	InputTokensDetails  *schemas.ResponsesResponseInputTokens  `json:"input_tokens_details,omitempty"`
+	OutputTokens        int                                    `json:"output_tokens"`
+	OutputTokensDetails *schemas.ResponsesResponseOutputTokens `json:"output_tokens_details,omitempty"`
+	TotalTokens         int                                    `json:"total_tokens"`
+
+	// Laya-specific fields
+	StateTokens        *int     `json:"state_tokens,omitempty"`
+	StateTokensDropped *int     `json:"state_tokens_dropped,omitempty"`
+	Truncated          *bool    `json:"truncated,omitempty"`
+	TruncatedQuestions []string `json:"truncated_questions,omitempty"`
+}
+
+// ToBifrostLLMUsage converts the usage into Bifrost's shape, or nil. The token
+// counts and details map as for a Responses usage.
+func (u *OpenAIDecisionUsage) ToBifrostLLMUsage() *schemas.BifrostLLMUsage {
+	if u == nil {
+		return nil
+	}
+	usage := (&schemas.ResponsesResponseUsage{
+		InputTokens:         u.InputTokens,
+		InputTokensDetails:  u.InputTokensDetails,
+		OutputTokens:        u.OutputTokens,
+		OutputTokensDetails: u.OutputTokensDetails,
+		TotalTokens:         u.TotalTokens,
+	}).ToBifrostLLMUsage()
+	usage.StateTokens = u.StateTokens
+	usage.StateTokensDropped = u.StateTokensDropped
+	usage.Truncated = u.Truncated
+	usage.TruncatedQuestions = u.TruncatedQuestions
+	return usage
+}
+
+// toOpenAIDecisionUsage converts Bifrost's usage into the decisions shape, or
+// nil.
+func toOpenAIDecisionUsage(u *schemas.BifrostLLMUsage) *OpenAIDecisionUsage {
+	if u == nil {
+		return nil
+	}
+	tokens := u.ToResponsesResponseUsage()
+	return &OpenAIDecisionUsage{
+		InputTokens:         tokens.InputTokens,
+		InputTokensDetails:  tokens.InputTokensDetails,
+		OutputTokens:        tokens.OutputTokens,
+		OutputTokensDetails: tokens.OutputTokensDetails,
+		TotalTokens:         tokens.TotalTokens,
+		StateTokens:         u.StateTokens,
+		StateTokensDropped:  u.StateTokensDropped,
+		Truncated:           u.Truncated,
+		TruncatedQuestions:  u.TruncatedQuestions,
+	}
 }
 
 // OpenAIRerankRequest represents an OpenAI-compatible rerank request
