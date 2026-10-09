@@ -178,6 +178,11 @@ type ServerConfig struct {
 	// disabled while the domain or advertised port is unset.
 	A2AGRPCBaseDomain string `json:"a2a_grpc_base_domain,omitempty"`
 	A2AGRPCPort       int    `json:"a2a_grpc_port,omitempty"`
+
+	// A2AAllowPrivatePushCallbacks lets Agent push delivery reach loopback and
+	// private network callback targets. It is intended only for controlled
+	// development and test environments and is disabled by default.
+	A2AAllowPrivatePushCallbacks bool `json:"a2a_allow_private_push_callbacks,omitempty"`
 }
 
 // ConfigData represents the configuration data for the Bifrost HTTP transport.

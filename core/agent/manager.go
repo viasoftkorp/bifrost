@@ -510,6 +510,9 @@ type ManagerConfig struct {
 	PluginPipelineRelease func(PluginPipeline)
 	GRPCBaseDomain        string
 	GRPCPort              int
+	// AllowPrivatePushCallbacks lets push delivery dial loopback and private
+	// addresses. Only for controlled test environments; defaults to false.
+	AllowPrivatePushCallbacks bool
 	// ExternalURLProvider, when set, is consulted on every use of the public
 	// base URL so admin configuration changes apply without a process restart,
 	// matching how MCP reads the same setting per request. The constructor's
@@ -554,7 +557,7 @@ func NewManager(ctx context.Context, store Store, logger schemas.Logger, externa
 		externalURL:        strings.TrimRight(externalURL, "/"),
 		externalURLFn:      config.ExternalURLProvider,
 		httpClient:         client,
-		pushDeliveryClient: newPushDeliveryClient(),
+		pushDeliveryClient: newPushDeliveryClient(config.AllowPrivatePushCallbacks),
 		pushRelayID:        uuid.NewString(),
 		oauthTokens:        make(map[string]oauthToken),
 		oauthFingerprints:  make(map[string][sha256.Size]byte),
