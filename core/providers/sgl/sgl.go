@@ -191,6 +191,26 @@ func (provider *SGLProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 	)
 }
 
+// chatResponseHandler is the custom response handler for sglang
+// sglang sends reasoning tokens in usage.reasoning_tokens instead of usage.completion_token_details.reasoning_tokens
+func chatResponseHandler(responseBody []byte, response *schemas.BifrostChatResponse, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bErr *schemas.BifrostError) {
+	rawRequest, rawResponse, bErr = providerUtils.HandleProviderResponse(responseBody, response, requestBody, sendBackRawRequest, sendBackRawResponse)
+	if bErr != nil {
+		return rawRequest, rawResponse, bErr
+	}
+	usage := response.Usage
+	if usage == nil || (usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != 0) {
+		return rawRequest, rawResponse, nil
+	}
+	if rt := providerUtils.GetJSONField(responseBody, "usage.reasoning_tokens").Int(); rt > 0 {
+		if usage.CompletionTokensDetails == nil {
+			usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+		}
+		usage.CompletionTokensDetails.ReasoningTokens = int(rt)
+	}
+	return rawRequest, rawResponse, nil
+}
+
 // ChatCompletion performs a chat completion request to the SGL API. When the key (or the
 // resolved alias) has UseAnthropicEndpoints set, the request is routed through SGLang's
 // Anthropic-compatible Messages endpoint instead of its OpenAI-compatible one.
@@ -230,7 +250,7 @@ func (provider *SGLProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
-		nil,
+		chatResponseHandler,
 		nil,
 		nil,
 		provider.logger,
@@ -293,7 +313,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 		schemas.SGL,
 		postHookRunner,
 		nil,
-		nil,
+		chatResponseHandler,
 		nil,
 		nil,
 		nil,

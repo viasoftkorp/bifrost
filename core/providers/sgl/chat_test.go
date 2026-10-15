@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -296,5 +297,182 @@ func TestTextCompletionStream_SetsAuthorizationHeader(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("mock server did not receive a streaming request within timeout")
+	}
+}
+
+// sglReasoningResponse is a non-stream body as returned by SGLang v0.5.21 with --reasoning-parser.
+const sglReasoningResponse = `{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"gpt-oss-20b",` +
+	`"choices":[{"index":0,"message":{"role":"assistant","content":"391","reasoning_content":"17*23"},"finish_reason":"stop"}],` +
+	`"usage":{"prompt_tokens":79,"total_tokens":328,"completion_tokens":249,"prompt_tokens_details":null,"reasoning_tokens":77}}`
+
+func newSGLTestKey(url string) schemas.Key {
+	return schemas.Key{
+		ID:           "test-key",
+		Value:        schemas.SecretVar{Val: "test-api-key"},
+		SGLKeyConfig: &schemas.SGLKeyConfig{URL: schemas.SecretVar{Val: url}},
+	}
+}
+
+func jsonServer(body string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, body)
+	}))
+}
+
+func newSGLChatRequest() *schemas.BifrostChatRequest {
+	hello := "Hello"
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.SGL,
+		Model:    "gpt-oss-20b",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &hello}},
+		},
+	}
+}
+
+func TestChatResponseHandler_ReasoningTokens(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want *int
+	}{
+		{"sgl top-level", `{"usage":{"completion_tokens":300,"reasoning_tokens":180}}`, schemas.Ptr(180)},
+		{"openai nested", `{"usage":{"completion_tokens":300,"completion_tokens_details":{"reasoning_tokens":180}}}`, schemas.Ptr(180)},
+		{"nested wins over top-level", `{"usage":{"completion_tokens_details":{"reasoning_tokens":180},"reasoning_tokens":7}}`, schemas.Ptr(180)},
+		{"zero top-level leaves details nil", `{"usage":{"completion_tokens":300,"reasoning_tokens":0}}`, nil},
+		{"absent", `{"usage":{"completion_tokens":300}}`, nil},
+		{"no usage", `{"choices":[]}`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var resp schemas.BifrostChatResponse
+			if _, _, bErr := chatResponseHandler([]byte(tc.body), &resp, nil, false, false); bErr != nil {
+				t.Fatalf("chatResponseHandler: %v", bErr.Error.Message)
+			}
+			var details *schemas.ChatCompletionTokensDetails
+			if resp.Usage != nil {
+				details = resp.Usage.CompletionTokensDetails
+			}
+			if tc.want == nil {
+				if details != nil {
+					t.Fatalf("expected nil completion_tokens_details, got %+v", details)
+				}
+				return
+			}
+			if details == nil || details.ReasoningTokens != *tc.want {
+				t.Fatalf("expected reasoning_tokens=%d, got %+v", *tc.want, details)
+			}
+		})
+	}
+}
+
+// TestChatCompletion_TopLevelReasoningTokens verifies that SGLang's top-level
+// usage.reasoning_tokens is surfaced as completion_tokens_details.reasoning_tokens.
+func TestChatCompletion_TopLevelReasoningTokens(t *testing.T) {
+	t.Parallel()
+	server := jsonServer(sglReasoningResponse)
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := newTestSGLProvider().ChatCompletion(ctx, newSGLTestKey(server.URL), newSGLChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion returned error: %v", bifrostErr.Error.Message)
+	}
+	if resp.Usage == nil || resp.Usage.CompletionTokensDetails == nil || resp.Usage.CompletionTokensDetails.ReasoningTokens != 77 {
+		t.Fatalf("expected completion_tokens_details.reasoning_tokens=77, got %+v", resp.Usage)
+	}
+}
+
+// TestResponses_TopLevelReasoningTokens covers the neutral /v1/responses route, which SGL serves via ChatCompletion.
+func TestResponses_TopLevelReasoningTokens(t *testing.T) {
+	t.Parallel()
+	server := jsonServer(sglReasoningResponse)
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	hello := "Hello"
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.SGL,
+		Model:    "gpt-oss-20b",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: &hello},
+		}},
+	}
+	resp, bifrostErr := newTestSGLProvider().Responses(ctx, newSGLTestKey(server.URL), req)
+	if bifrostErr != nil {
+		t.Fatalf("Responses returned error: %v", bifrostErr.Error.Message)
+	}
+	if resp.Usage == nil || resp.Usage.OutputTokensDetails == nil || resp.Usage.OutputTokensDetails.ReasoningTokens != 77 {
+		t.Fatalf("expected output_tokens_details.reasoning_tokens=77, got %+v", resp.Usage)
+	}
+}
+
+// TestChatCompletionStream_TopLevelReasoningTokens verifies the usage chunk of an SGLang stream.
+func TestChatCompletionStream_TopLevelReasoningTokens(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[{"index":0,"delta":{"role":"assistant","content":"391"},"finish_reason":null}],"usage":null}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":null}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[],"usage":{"prompt_tokens":79,"total_tokens":396,"completion_tokens":317,"prompt_tokens_details":null,"reasoning_tokens":148}}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	streamChan, bifrostErr := newTestSGLProvider().ChatCompletionStream(ctx, noopPostHookRunner, nil, newSGLTestKey(server.URL), newSGLChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletionStream returned error: %v", bifrostErr.Error.Message)
+	}
+	var usage *schemas.BifrostLLMUsage
+	timeout := time.After(5 * time.Second)
+	for done := false; !done; {
+		select {
+		case chunk, ok := <-streamChan:
+			if !ok {
+				done = true
+				break
+			}
+			if chunk.BifrostError != nil {
+				t.Fatalf("stream error: %v", chunk.BifrostError.Error.Message)
+			}
+			if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+				usage = chunk.BifrostChatResponse.Usage
+			}
+		case <-timeout:
+			t.Fatal("stream did not close within timeout")
+		}
+	}
+	if usage == nil || usage.CompletionTokensDetails == nil || usage.CompletionTokensDetails.ReasoningTokens != 148 {
+		t.Fatalf("expected completion_tokens_details.reasoning_tokens=148 on the usage chunk, got %+v", usage)
+	}
+}
+
+func BenchmarkChatResponseHandler(b *testing.B) {
+	bodies := map[string][]byte{
+		"delta_chunk": []byte(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[{"index":0,"delta":{"content":"391"},"finish_reason":null}],"usage":null}`),
+		"usage_chunk": []byte(`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[],"usage":{"prompt_tokens":79,"total_tokens":396,"completion_tokens":317,"prompt_tokens_details":null,"reasoning_tokens":148}}`),
+		"response":    []byte(sglReasoningResponse),
+	}
+	handlers := map[string]func([]byte, *schemas.BifrostChatResponse){
+		"default": func(body []byte, r *schemas.BifrostChatResponse) {
+			_, _, _ = providerUtils.HandleProviderResponse(body, r, nil, false, false)
+		},
+		"sgl": func(body []byte, r *schemas.BifrostChatResponse) {
+			_, _, _ = chatResponseHandler(body, r, nil, false, false)
+		},
+	}
+	for bodyName, body := range bodies {
+		for hName, h := range handlers {
+			b.Run(bodyName+"/"+hName, func(b *testing.B) {
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					var r schemas.BifrostChatResponse
+					h(body, &r)
+				}
+			})
+		}
 	}
 }
