@@ -1070,11 +1070,35 @@ export default function AppSidebar() {
 				],
 			},
 			{
-				title: "Cluster Config",
+				title: "Cluster",
 				url: "/workspace/cluster",
 				icon: Network,
-				description: "Manage Bifrost cluster",
+				description: "Monitor the Bifrost cluster",
 				hasAccess: hasClusterConfigAccess,
+				subItems: [
+					{
+						title: "Overview",
+						url: "/workspace/cluster/overview",
+						icon: ChartColumnBig,
+						description: "Node health, CPU, memory and request rate",
+						hasAccess: hasClusterConfigAccess,
+					},
+					{
+						title: "Incidents",
+						url: "/workspace/cluster/incidents",
+						icon: TriangleAlert,
+						description: "Memory and message delivery incidents",
+						hasAccess: hasClusterConfigAccess,
+					},
+					{
+						title: "Settings",
+						url: "/workspace/cluster/settings",
+						icon: Settings2Icon,
+						description: "Monitoring, sample retention and memory threshold",
+						// The settings API sits under the Settings resource; saving also needs Settings update.
+						hasAccess: hasClusterConfigAccess && hasSettingsAccess,
+					},
+				],
 			},
 			{
 				title: "Adaptive Routing",
