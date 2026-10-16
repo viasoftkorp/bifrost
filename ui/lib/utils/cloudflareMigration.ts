@@ -130,6 +130,8 @@ export const buildCloudflareMigrationPlan = (source: ModelProvider, sourceKeys: 
 			warnings.push("No Authorization header was found on the custom provider; enter the API token below.");
 		} else if (auth.problem === "not_bearer") {
 			warnings.push("The Authorization header is not a Bearer token; enter the API token below.");
+		} else if (auth.problem === "masked") {
+			warnings.push("The Authorization header is stored as a literal value and cannot be read; enter the API token below.");
 		}
 		headerToken = { name: `${source.name}-token`, value: auth.token, needsValue: !auth.token };
 	}
