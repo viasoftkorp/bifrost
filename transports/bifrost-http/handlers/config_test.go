@@ -647,6 +647,66 @@ func TestUpdateConfig_MCPOpenAPIMaxSpecMB(t *testing.T) {
 	assert.Zero(t, cfg.MCPOpenAPIMaxSpecBytes(), "0 leaves the limit to openapimcp's default")
 }
 
+// public_base_url, bifrost_mcp_spec_url and bifrost_mcp_allow_writes are copied only
+// when sent, so a partial save keeps them; an invalid value is refused before anything
+// changes; and allow_writes false is stored as false, not reset to the default.
+func TestUpdateConfig_PublicBaseURLAndBifrostMCPSettings(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() *configstore.ClientConfig {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted
+	}
+
+	set := putConfigCtx(`{"client_config":{"log_retention_days":8,"public_base_url":"https://gw.example.com","bifrost_mcp_spec_url":"specs/openapi.json","bifrost_mcp_allow_writes":false}}`)
+	h.updateConfig(set)
+	require.Equal(t, fasthttp.StatusOK, set.Response.StatusCode(), string(set.Response.Body()))
+	assert.Equal(t, "https://gw.example.com", cfg.GetPublicBaseURL())
+	specURL, allowWrites := cfg.GetBifrostMCPSettings()
+	assert.Equal(t, "specs/openapi.json", specURL)
+	assert.False(t, allowWrites)
+	persisted := stored()
+	assert.Equal(t, "https://gw.example.com", persisted.PublicBaseURL.GetValue())
+	require.NotNil(t, persisted.BifrostMCPAllowWrites)
+	assert.False(t, *persisted.BifrostMCPAllowWrites)
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":9}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	persisted = stored()
+	assert.Equal(t, "https://gw.example.com", persisted.PublicBaseURL.GetValue(), "an omitted field keeps the stored value")
+	assert.Equal(t, "specs/openapi.json", persisted.BifrostMCPSpecURL)
+	require.NotNil(t, persisted.BifrostMCPAllowWrites)
+	assert.False(t, *persisted.BifrostMCPAllowWrites)
+
+	for _, body := range []string{
+		`{"client_config":{"log_retention_days":8,"public_base_url":"gw.example.com"}}`,
+		`{"client_config":{"log_retention_days":8,"public_base_url":"https://user:pass@gw.example.com"}}`,
+		`{"client_config":{"log_retention_days":8,"bifrost_mcp_spec_url":"/etc/passwd"}}`,
+		`{"client_config":{"log_retention_days":8,"bifrost_mcp_spec_url":"../openapi.json"}}`,
+		`{"client_config":{"log_retention_days":8,"bifrost_mcp_spec_url":"ftp://example.com/openapi.json"}}`,
+	} {
+		refused := putConfigCtx(body)
+		h.updateConfig(refused)
+		assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), "%s: %s", body, refused.Response.Body())
+		assert.Equal(t, "https://gw.example.com", stored().PublicBaseURL.GetValue(), "%s left the stored value unchanged", body)
+		assert.Equal(t, "specs/openapi.json", stored().BifrostMCPSpecURL, "%s left the stored value unchanged", body)
+	}
+
+	reset := putConfigCtx(`{"client_config":{"log_retention_days":8,"public_base_url":"","bifrost_mcp_spec_url":"","bifrost_mcp_allow_writes":null}}`)
+	h.updateConfig(reset)
+	require.Equal(t, fasthttp.StatusOK, reset.Response.StatusCode(), string(reset.Response.Body()))
+	assert.Empty(t, cfg.GetPublicBaseURL())
+	specURL, allowWrites = cfg.GetBifrostMCPSettings()
+	assert.Empty(t, specURL)
+	assert.True(t, allowWrites, "null resets the writes switch to its default, on")
+}
+
 // extra_fields_placement is copied only when sent, so a partial save keeps the stored value,
 // and anything other than body/headers is refused before any live mutation.
 func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {

@@ -3021,6 +3021,44 @@ func TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_BifrostMCPSpecURLOutsideAppDirFailsBoot: PUT /api/config refuses a
+// bifrost_mcp_spec_url outside the app directory, and config.json gets the same rule.
+func TestLoadConfig_BifrostMCPSpecURLOutsideAppDirFailsBoot(t *testing.T) {
+	initTestLogger()
+	for _, specURL := range []string{"/etc/bifrost/openapi.json", "../openapi.json"} {
+		tempDir := createTempDir(t)
+		createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{BifrostMCPSpecURL: specURL}})
+		ctx := context.Background()
+		config, err := LoadConfig(ctx, tempDir)
+		if config != nil {
+			config.Close(ctx)
+		}
+		require.ErrorContains(t, err, "bifrost_mcp_spec_url", specURL)
+	}
+}
+
+// TestGetPublicBaseURLAndBifrostMCPSettings: the getters trim, ignore an invalid public
+// URL rather than letting a request-derived fallback be shadowed by garbage, and treat
+// an unset writes switch as on.
+func TestGetPublicBaseURLAndBifrostMCPSettings(t *testing.T) {
+	cfg := &Config{ClientConfig: &configstore.ClientConfig{}}
+	assert.Empty(t, cfg.GetPublicBaseURL())
+	specURL, allowWrites := cfg.GetBifrostMCPSettings()
+	assert.Empty(t, specURL)
+	assert.True(t, allowWrites)
+
+	cfg.ClientConfig.PublicBaseURL = schemas.NewSecretVar(" https://gw.example.com/bifrost/ ")
+	cfg.ClientConfig.BifrostMCPSpecURL = " specs/openapi.json "
+	cfg.ClientConfig.BifrostMCPAllowWrites = new(false)
+	assert.Equal(t, "https://gw.example.com/bifrost", cfg.GetPublicBaseURL())
+	specURL, allowWrites = cfg.GetBifrostMCPSettings()
+	assert.Equal(t, "specs/openapi.json", specURL)
+	assert.False(t, allowWrites)
+
+	cfg.ClientConfig.PublicBaseURL = schemas.NewSecretVar("not a url")
+	assert.Empty(t, cfg.GetPublicBaseURL())
+}
+
 // TestConfigDataSourceOfTruthDefaultsToSplit verifies omitted source_of_truth uses split mode.
 func TestConfigDataSourceOfTruthDefaultsToSplit(t *testing.T) {
 	var configData ConfigData

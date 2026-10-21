@@ -132485,6 +132485,51 @@
                 "default": 0,
                 "description": "Size limit, in MiB, on the spec of an openapi MCP client, whether inline, uploaded or fetched from spec_url. Applies to previews, creates, updates and connects. 0 uses the built-in default of 32. Omit the field to keep the stored value. An inline or uploaded spec travels inside the JSON request body, so it is also capped by max_request_body_size_mb (100 by default): uploads larger than about 100 MiB need max_request_body_size_mb raised above the spec size, with headroom for JSON escaping, and a server restart. A request that sends only spec_url is not subject to that cap, since the server fetches the document itself; the dashboard, however, saves a URL import as the inline document its preview fetched, so a URL import larger than max_request_body_size_mb fails there.\n"
               },
+              "public_base_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "string"
+                      },
+                      "ref": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ]
+                      },
+                      "env_var": {
+                        "type": "string"
+                      },
+                      "from_env": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ],
+                "description": "The gateway's public base URL (scheme, host and any base path), as clients reach it through your proxy, at most 512 characters. Required for /v1/mcp: its tool calls take their host and scheme from it, never from the Host the client sent, so the URLs their routes build point here. Unset (or an empty string), the Bifrost MCP does not load and /v1/mcp answers 503. Supports env var syntax and vault refs. Must include server.base_path when Bifrost is mounted under one. Omit the field to keep the stored value.\n"
+              },
+              "bifrost_mcp_spec_url": {
+                "type": "string",
+                "maxLength": 2048,
+                "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Empty reads the build's default: dev's openapi-oss.json on OSS, openapi.json on enterprise. Saving a new value rebuilds /v1/mcp; if the new spec cannot be loaded, the previous tools stay in service. Omit the field to keep the stored value.\n"
+              },
+              "bifrost_mcp_allow_writes": {
+                "type": "boolean",
+                "nullable": true,
+                "default": true,
+                "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes outside /api are served either way. Every call is still authorized by the caller's own credential, and destructive tools carry destructiveHint. Unset or null is true. Omit the field to keep the stored value.\n"
+              },
               "mcp_oauth_private_allowlist": {
                 "type": "array",
                 "items": {
@@ -133032,6 +133077,51 @@
                 "maximum": 256,
                 "default": 0,
                 "description": "Size limit, in MiB, on the spec of an openapi MCP client, whether inline, uploaded or fetched from spec_url. Applies to previews, creates, updates and connects. 0 uses the built-in default of 32. Omit the field to keep the stored value. An inline or uploaded spec travels inside the JSON request body, so it is also capped by max_request_body_size_mb (100 by default): uploads larger than about 100 MiB need max_request_body_size_mb raised above the spec size, with headroom for JSON escaping, and a server restart. A request that sends only spec_url is not subject to that cap, since the server fetches the document itself; the dashboard, however, saves a URL import as the inline document its preview fetched, so a URL import larger than max_request_body_size_mb fails there.\n"
+              },
+              "public_base_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "string"
+                      },
+                      "ref": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ]
+                      },
+                      "env_var": {
+                        "type": "string"
+                      },
+                      "from_env": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ],
+                "description": "The gateway's public base URL (scheme, host and any base path), as clients reach it through your proxy, at most 512 characters. Required for /v1/mcp: its tool calls take their host and scheme from it, never from the Host the client sent, so the URLs their routes build point here. Unset (or an empty string), the Bifrost MCP does not load and /v1/mcp answers 503. Supports env var syntax and vault refs. Must include server.base_path when Bifrost is mounted under one. Omit the field to keep the stored value.\n"
+              },
+              "bifrost_mcp_spec_url": {
+                "type": "string",
+                "maxLength": 2048,
+                "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Empty reads the build's default: dev's openapi-oss.json on OSS, openapi.json on enterprise. Saving a new value rebuilds /v1/mcp; if the new spec cannot be loaded, the previous tools stay in service. Omit the field to keep the stored value.\n"
+              },
+              "bifrost_mcp_allow_writes": {
+                "type": "boolean",
+                "nullable": true,
+                "default": true,
+                "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes outside /api are served either way. Every call is still authorized by the caller's own credential, and destructive tools carry destructiveHint. Unset or null is true. Omit the field to keep the stored value.\n"
               },
               "mcp_oauth_private_allowlist": {
                 "type": "array",

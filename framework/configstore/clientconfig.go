@@ -9,6 +9,7 @@ import (
 	"hash"
 	"math"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -121,6 +122,9 @@ type ClientConfig struct {
 	MCPMaxInstructionsPerClient             int                                   `json:"mcp_max_instructions_per_client"`               // Byte bound on one server's forwarded instructions; 0 is the default
 	MCPMaxInstructionsTotal                 int                                   `json:"mcp_max_instructions_total"`                    // Byte bound on the whole forwarded aggregate; 0 is the default
 	MCPOpenAPIMaxSpecMB                     int                                   `json:"mcp_openapi_max_spec_mb"`                       // Size limit on an openapi MCP client's spec in MiB; 0 is the default (32)
+	PublicBaseURL                           *schemas.SecretVar                    `json:"public_base_url,omitempty"`                     // The gateway's public base URL; /v1/mcp tool calls address it. Supports env var syntax ("env.MY_VAR")
+	BifrostMCPSpecURL                       string                                `json:"bifrost_mcp_spec_url,omitempty"`                // Spec /v1/mcp builds its tools from: an http(s) URL or a path under the app dir; empty is the build's default
+	BifrostMCPAllowWrites                   *bool                                 `json:"bifrost_mcp_allow_writes,omitempty"`            // Whether /v1/mcp serves non-GET /api tools; nil is true
 	MCPCodeModeLimits                       *schemas.MCPCodeModeLimits            `json:"mcp_code_mode_limits,omitempty"`                // Per-execution code mode limits; nil or zero fields use the defaults
 	MCPOAuthPrivateAllowlist                []string                              `json:"mcp_oauth_private_allowlist,omitempty"`         // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
 	A2APrivateAllowlist                     []string                              `json:"a2a_private_allowlist,omitempty"`               // Private hosts, IPs and CIDRs the Agent Gateway may reach for clients registered with admin auth
@@ -583,6 +587,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			hash.Write([]byte("a2aExternalClientURL:val:" + c.A2AExternalClientURL.GetValue()))
 		}
 	}
+	if c.PublicBaseURL != nil {
+		if c.PublicBaseURL.IsFromSecret() {
+			hash.Write([]byte("publicBaseURL:ref:" + c.PublicBaseURL.GetRawRef()))
+		} else if v := c.PublicBaseURL.GetValue(); v != "" {
+			hash.Write([]byte("publicBaseURL:val:" + v))
+		}
+	}
+	if c.BifrostMCPSpecURL != "" {
+		hash.Write([]byte("bifrostMCPSpecURL:" + c.BifrostMCPSpecURL))
+	}
+	if c.BifrostMCPAllowWrites != nil {
+		hash.Write([]byte("bifrostMCPAllowWrites:" + strconv.FormatBool(*c.BifrostMCPAllowWrites)))
+	}
 
 	// Only hash non-default values to avoid legacy config hash churn on upgrade —
 	// existing configs carry an empty auth mode and a nil OAuth2 server config.
@@ -675,6 +692,9 @@ func (c *ClientConfig) Redacted() ClientConfig {
 	}
 	if c.A2AExternalClientURL != nil && c.A2AExternalClientURL.IsFromSecret() {
 		out.A2AExternalClientURL = c.A2AExternalClientURL.Redacted()
+	}
+	if c.PublicBaseURL != nil && c.PublicBaseURL.IsFromSecret() {
+		out.PublicBaseURL = c.PublicBaseURL.Redacted()
 	}
 	return out
 }
@@ -2907,11 +2927,51 @@ type GovernanceConfig struct {
 	ComplexityAnalyzerConfig *ComplexityAnalyzerConfig     `json:"complexity_analyzer_config,omitempty"`
 }
 
+// MaxBifrostMCPSpecURLLength bounds bifrost_mcp_spec_url, matching its column and config.schema.json.
+const MaxBifrostMCPSpecURLLength = 2048
+
+// ValidateBifrostMCPSpecURL accepts an empty setting (the build's default spec), an
+// absolute http(s) URL, or a relative path that stays inside the app directory. An
+// absolute path is refused: the setting is writable over the API, and a spec file
+// belongs beside config.json.
+func ValidateBifrostMCPSpecURL(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if len(value) > MaxBifrostMCPSpecURLLength {
+		return fmt.Errorf("must be at most %d characters", MaxBifrostMCPSpecURLLength)
+	}
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Hostname() == "" {
+			return fmt.Errorf("must be an absolute http(s) URL or a path relative to the app directory")
+		}
+		return nil
+	}
+	if strings.Contains(value, "://") {
+		return fmt.Errorf("must be an http(s) URL or a path relative to the app directory")
+	}
+	clean := filepath.Clean(filepath.FromSlash(value))
+	if filepath.IsAbs(clean) || strings.HasPrefix(value, "/") || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("must be a path relative to the app directory that stays inside it")
+	}
+	return nil
+}
+
+// MaxPublicURLLength is the longest public URL a setting accepts: public_base_url
+// and the MCP, Skills and A2A external client URLs are stored in varchar(512)
+// columns, so a longer value would be accepted and then fail to save.
+const MaxPublicURLLength = 512
+
 // ValidatePublicBaseURL accepts an empty setting or a public HTTP base URL without private URL components.
 // Errors omit the value because it may contain credentials resolved from a secret reference.
 func ValidatePublicBaseURL(value string) error {
 	if value == "" {
 		return nil
+	}
+	if len(value) > MaxPublicURLLength {
+		return fmt.Errorf("must be at most %d characters", MaxPublicURLLength)
 	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {

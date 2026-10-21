@@ -111,6 +111,8 @@ export default function MCPView() {
 			localConfig.mcp_max_instructions_per_client !== (config.mcp_max_instructions_per_client ?? 0) ||
 			localConfig.mcp_max_instructions_total !== (config.mcp_max_instructions_total ?? 0) ||
 			localConfig.mcp_openapi_max_spec_mb !== (config.mcp_openapi_max_spec_mb ?? 0) ||
+			(localConfig.bifrost_mcp_spec_url ?? "").trim() !== (config.bifrost_mcp_spec_url ?? "") ||
+			(localConfig.bifrost_mcp_allow_writes ?? true) !== (config.bifrost_mcp_allow_writes ?? true) ||
 			!codeModeLimitsEqual(localConfig.mcp_code_mode_limits, config.mcp_code_mode_limits) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
@@ -205,6 +207,14 @@ export default function MCPView() {
 
 	const handleOAuthPrivateAllowlistChange = useCallback((value: string[]) => {
 		setLocalConfig((prev) => ({ ...prev, mcp_oauth_private_allowlist: value }));
+	}, []);
+
+	const handleBifrostMCPSpecURLChange = useCallback((value: string) => {
+		setLocalConfig((prev) => ({ ...prev, bifrost_mcp_spec_url: value }));
+	}, []);
+
+	const handleBifrostMCPAllowWritesChange = useCallback((checked: boolean) => {
+		setLocalConfig((prev) => ({ ...prev, bifrost_mcp_allow_writes: checked }));
 	}, []);
 
 	const handleClientURLChange = useCallback((value: SecretVar) => {
@@ -343,16 +353,17 @@ export default function MCPView() {
 			// oauth2_server_config with the TTLs omitted — which the Go side unmarshals
 			// back as 0. Write the validated values so the stored config always matches
 			// what the form shows.
+			const withSettings: CoreConfig = { ...localConfig, bifrost_mcp_spec_url: (localConfig.bifrost_mcp_spec_url ?? "").trim() };
 			const clientConfigToSave: CoreConfig = oauthModeActive
 				? {
-						...localConfig,
+						...withSettings,
 						oauth2_server_config: {
-							...localConfig.oauth2_server_config,
+							...withSettings.oauth2_server_config,
 							auth_code_ttl: authCodeTTL,
 							access_token_ttl: accessTokenTTL,
 						},
 					}
-				: localConfig;
+				: withSettings;
 
 			await updateCoreConfig({
 				...bifrostConfig,
@@ -575,6 +586,45 @@ export default function MCPView() {
 						max={MAX_OPENAPI_SPEC_MB}
 						disabled={!hasSettingsUpdateAccess}
 					/>
+				</div>
+
+				{/* Bifrost MCP (/v1/mcp): the spec its tools are built from, and whether /api writes are tools. */}
+				<div className="space-y-4 rounded-sm border p-4" data-testid="bifrost-mcp-settings">
+					<div className="space-y-0.5">
+						<h3 className="text-sm font-medium">{t("mcpSettings.bifrostMcpTitle")}</h3>
+						<p className="text-muted-foreground text-sm">
+							<Trans t={t} i18nKey="mcpSettings.bifrostMcpHelp" components={{ code0: <code className="text-xs" /> }} />
+						</p>
+					</div>
+					<div className="space-y-2">
+						<label htmlFor="bifrost-mcp-spec-url" className="text-sm font-medium">
+							{t("mcpSettings.bifrostMcpSpecUrl")}
+						</label>
+						<p className="text-muted-foreground text-sm">{t("mcpSettings.bifrostMcpSpecUrlHelp")}</p>
+						<Input
+							id="bifrost-mcp-spec-url"
+							data-testid="bifrost-mcp-spec-url-input"
+							placeholder={t("mcpSettings.bifrostMcpSpecUrlPlaceholder")}
+							value={localConfig.bifrost_mcp_spec_url ?? ""}
+							onChange={(e) => handleBifrostMCPSpecURLChange(e.target.value)}
+							disabled={!hasSettingsUpdateAccess}
+						/>
+					</div>
+					<div className="flex items-center justify-between space-x-2">
+						<div className="space-y-0.5">
+							<label htmlFor="bifrost-mcp-allow-writes" className="text-sm font-medium">
+								{t("mcpSettings.bifrostMcpAllowWrites")}
+							</label>
+							<p className="text-muted-foreground text-sm">{t("mcpSettings.bifrostMcpAllowWritesHelp")}</p>
+						</div>
+						<Switch
+							id="bifrost-mcp-allow-writes"
+							checked={localConfig.bifrost_mcp_allow_writes ?? true}
+							onCheckedChange={handleBifrostMCPAllowWritesChange}
+							disabled={!hasSettingsUpdateAccess}
+							data-testid="bifrost-mcp-allow-writes-switch"
+						/>
+					</div>
 				</div>
 
 				{/* Code Mode Settings — binding level and execution limits, collapsed like Advanced Settings. */}

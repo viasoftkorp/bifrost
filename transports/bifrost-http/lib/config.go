@@ -1619,6 +1619,10 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	if mb := cc.MCPOpenAPIMaxSpecMB; mb < 0 || mb > configstore.MaxMCPOpenAPISpecMB {
 		return fmt.Errorf("mcp_openapi_max_spec_mb %d must be between 0 (the default, 32) and %d", mb, configstore.MaxMCPOpenAPISpecMB)
 	}
+	// PUT /api/config bounds the Bifrost MCP spec source the same way.
+	if err := configstore.ValidateBifrostMCPSpecURL(cc.BifrostMCPSpecURL); err != nil {
+		return fmt.Errorf("bifrost_mcp_spec_url %w", err)
+	}
 	// The allowlist relaxes an SSRF guard, so a typo must stop startup rather
 	// than leave an entry that silently matches nothing.
 	if _, err := network.ValidatePrivateTargetAllowlist(cc.MCPOAuthPrivateAllowlist); err != nil {
@@ -1670,6 +1674,10 @@ func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 	if err := configstore.ValidatePublicBaseURL(client.A2AExternalClientURL.GetValue()); err != nil {
 		logger.Warn("a2a_external_client_url %v; Agent Gateway protocol endpoints will be disabled", err)
 		client.A2AExternalClientURL = nil
+	}
+	if err := configstore.ValidatePublicBaseURL(client.PublicBaseURL.GetValue()); err != nil {
+		logger.Warn("public_base_url %v; it will be ignored and self URLs will follow the request", err)
+		client.PublicBaseURL = nil
 	}
 }
 
@@ -8402,6 +8410,34 @@ func (c *Config) GetMCPExternalClientURL() string {
 		return ""
 	}
 	return value
+}
+
+// GetPublicBaseURL returns the configured public base URL of the gateway, without a
+// trailing slash, or empty string if it is not configured or not a valid public URL.
+// Resolves env var references automatically.
+func (c *Config) GetPublicBaseURL() string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil || c.ClientConfig.PublicBaseURL == nil {
+		return ""
+	}
+	value := strings.TrimRight(strings.TrimSpace(c.ClientConfig.PublicBaseURL.GetValue()), "/")
+	if configstore.ValidatePublicBaseURL(value) != nil {
+		return ""
+	}
+	return value
+}
+
+// GetBifrostMCPSettings returns the Bifrost MCP's configured spec source (empty is the
+// build's default) and whether it serves non-GET /api tools (true unless turned off).
+func (c *Config) GetBifrostMCPSettings() (specURL string, allowWrites bool) {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil {
+		return "", true
+	}
+	allowWrites = c.ClientConfig.BifrostMCPAllowWrites == nil || *c.ClientConfig.BifrostMCPAllowWrites
+	return strings.TrimSpace(c.ClientConfig.BifrostMCPSpecURL), allowWrites
 }
 
 // GetA2AExternalClientURL returns the configured external base URL used for Agent Gateway

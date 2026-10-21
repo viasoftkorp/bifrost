@@ -1,3 +1,4 @@
+import { coreConfigApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import type { Page } from '@playwright/test'
 import { ConfigSettingsState } from './pages/config-settings.page'
@@ -256,6 +257,30 @@ test.describe('Client Settings', () => {
         await configSettingsPage.selectExtraFieldsPlacement(original)
         await configSettingsPage.saveSettings()
       }
+    }
+  })
+
+  test('should save the public base URL', async ({ configSettingsPage, request }) => {
+    const original = (await coreConfigApi.get(request)).client_config.public_base_url ?? ''
+    try {
+      await configSettingsPage.goto('client-settings')
+      const input = configSettingsPage.page.getByTestId('client-settings-public-base-url-input')
+      await expect(input).toBeVisible()
+
+      await input.fill('https://gateway.e2e.example')
+      await configSettingsPage.saveSettings()
+      await expect
+        .poll(async () => {
+          const value = (await coreConfigApi.get(request)).client_config.public_base_url
+          if (typeof value === 'string') return value
+          return value !== null && typeof value === 'object' && 'value' in value ? value.value : undefined
+        })
+        .toBe('https://gateway.e2e.example')
+
+      await configSettingsPage.page.reload()
+      await expect(input).toHaveValue('https://gateway.e2e.example')
+    } finally {
+      await coreConfigApi.updateClientConfig(request, { public_base_url: original })
     }
   })
 })

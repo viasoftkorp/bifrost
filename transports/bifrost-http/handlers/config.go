@@ -376,6 +376,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("a2a_external_client_url %v", err))
 		return
 	}
+	if err := configstore.ValidatePublicBaseURL(payload.ClientConfig.PublicBaseURL.GetValue()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("public_base_url %v", err))
+		return
+	}
+	if err := configstore.ValidateBifrostMCPSpecURL(payload.ClientConfig.BifrostMCPSpecURL); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("bifrost_mcp_spec_url %v", err))
+		return
+	}
 
 	// enforce_vk_object_ownership is a plain bool that defaults to true, so a JSON null would
 	// decode as true and silently re-enable ownership. Refuse it; omit the field to keep the stored value.
@@ -959,6 +967,17 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if _, present := clientConfigFields["a2a_external_client_url"]; present {
 		updatedConfig.A2AExternalClientURL = payload.ClientConfig.A2AExternalClientURL
+	}
+	// Copied only when sent, so a partial save keeps them; an empty value or null resets
+	// each to its default. The reload that follows the save rebuilds /v1/mcp.
+	if _, present := clientConfigFields["public_base_url"]; present {
+		updatedConfig.PublicBaseURL = payload.ClientConfig.PublicBaseURL
+	}
+	if _, present := clientConfigFields["bifrost_mcp_spec_url"]; present {
+		updatedConfig.BifrostMCPSpecURL = strings.TrimSpace(payload.ClientConfig.BifrostMCPSpecURL)
+	}
+	if _, present := clientConfigFields["bifrost_mcp_allow_writes"]; present {
+		updatedConfig.BifrostMCPAllowWrites = payload.ClientConfig.BifrostMCPAllowWrites
 	}
 
 	// Only update each field when explicitly provided so partial /api/config

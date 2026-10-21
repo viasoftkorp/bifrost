@@ -949,6 +949,9 @@ export interface CoreConfig {
 	mcp_max_instructions_per_client: number;
 	mcp_max_instructions_total: number;
 	mcp_openapi_max_spec_mb: number;
+	public_base_url?: SecretVar;
+	bifrost_mcp_spec_url?: string;
+	bifrost_mcp_allow_writes?: boolean;
 	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
 	mcp_oauth_private_allowlist?: string[];

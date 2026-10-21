@@ -4964,6 +4964,35 @@ func TestMigrationAddClientConfigMCPOpenAPIMaxSpecMBColumn(t *testing.T) {
 	require.NoError(t, migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn(ctx, db, testMigrationLogger))
 }
 
+func TestMigrationAddClientConfigPublicBaseURLAndBifrostMCPColumns(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	columns := []string{"public_base_url", "bifrost_mcp_spec_url", "bifrost_mcp_allow_writes"}
+	mg := db.Migrator()
+	for _, column := range columns {
+		require.NoError(t, mg.DropColumn(&tables.TableClientConfig{}, column))
+		require.False(t, mg.HasColumn(&tables.TableClientConfig{}, column))
+	}
+
+	require.NoError(t, migrationAddClientConfigPublicBaseURLAndBifrostMCPColumns(ctx, db, testMigrationLogger))
+	for _, column := range columns {
+		assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, column), column)
+	}
+
+	// Existing rows read back unset: request-derived self URLs, the default spec, writes on.
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.Empty(t, cfg.PublicBaseURL)
+	assert.Empty(t, cfg.BifrostMCPSpecURL)
+	assert.Nil(t, cfg.BifrostMCPAllowWrites)
+
+	// Idempotent: a re-run with the columns already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_public_base_url_and_bifrost_mcp_columns").Error)
+	require.NoError(t, migrationAddClientConfigPublicBaseURLAndBifrostMCPColumns(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()

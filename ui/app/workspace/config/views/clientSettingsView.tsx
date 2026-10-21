@@ -4,12 +4,15 @@ import PageTitle from "@/components/pageTitle";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useGetCoreConfigQuery, useGetDroppedRequestsQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig, DefaultGlobalHeaderFilterConfig, GlobalHeaderFilterConfig } from "@/lib/types/config";
+import { SecretVar } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
+import { secretVarEquals } from "@/lib/utils/secretVarForm";
 import LargePayloadSettingsFragment from "@enterprise/components/large-payload/largePayloadSettingsFragment";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetLargePayloadConfigQuery, useUpdateLargePayloadConfigMutation } from "@enterprise/lib/store/apis/largePayloadApi";
@@ -117,6 +120,7 @@ export default function ClientSettingsView() {
 			localConfig.dump_errors_in_console_logs !== config.dump_errors_in_console_logs ||
 			localConfig.async_job_result_ttl !== config.async_job_result_ttl ||
 			(localConfig.extra_fields_placement ?? "body") !== (config.extra_fields_placement ?? "body") ||
+			!secretVarEquals(localConfig.public_base_url, config.public_base_url) ||
 			!headerFilterConfigEqual(localConfig.header_filter_config, config.header_filter_config)
 		);
 	}, [config, localConfig]);
@@ -443,6 +447,24 @@ export default function ClientSettingsView() {
 						data-testid="client-settings-async-job-result-ttl-input"
 					/>
 				</div>
+			</div>
+
+			{/* Public Base URL */}
+			<div className="space-y-2 rounded-sm border p-4" data-testid="client-settings-public-base-url">
+				<label htmlFor="public-base-url" className="text-sm font-medium">
+					{t("clientSettings.publicBaseUrl")}
+				</label>
+				<p className="text-muted-foreground text-sm">
+					<Trans t={t} i18nKey="clientSettings.publicBaseUrlHelp" components={{ code0: <code className="text-xs" /> }} />
+				</p>
+				<SecretVarInput
+					id="public-base-url"
+					data-testid="client-settings-public-base-url-input"
+					placeholder={t("clientSettings.publicBaseUrlPlaceholder")}
+					value={localConfig.public_base_url}
+					onChange={(value: SecretVar) => setLocalConfig((prev) => ({ ...prev, public_base_url: value }))}
+					disabled={!hasSettingsUpdateAccess}
+				/>
 			</div>
 
 			<UserAgentMappingsView disabled={isLoading || !hasSettingsUpdateAccess} />
