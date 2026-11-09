@@ -591,6 +591,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_cache_creation_above_12hr_pricing_columns"}, run: migrationAddCacheCreationAbove12hrPricingColumns},
 	{IDs: []string{"add_datasheet_overrides_table"}, run: migrationAddDatasheetOverridesTable},
 	{IDs: []string{"add_usage_estimation_tokenizers_json_column"}, run: migrationAddUsageEstimationTokenizersJSONColumn},
+	{IDs: []string{"add_mcp_client_slug_code_mode_column"}, run: migrationAddMCPClientSlugCodeModeColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17151,6 +17152,38 @@ func migrationAddUsageEstimationTokenizersJSONColumn(ctx context.Context, db *go
 			tx = tx.WithContext(ctx)
 			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "usage_estimation_tokenizers_json"); err != nil {
 				return fmt.Errorf("failed to drop usage_estimation_tokenizers_json column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPClientSlugCodeModeColumn adds the nullable slug_code_mode column to
+// config_mcp_clients. No backfill: NULL inherits is_code_mode_client, which is today's behavior.
+func migrationAddMCPClientSlugCodeModeColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_slug_code_mode_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "SlugCodeMode"); err != nil {
+				return fmt.Errorf("add slug_code_mode column to config_mcp_clients: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "SlugCodeMode"); err != nil {
+				return fmt.Errorf("drop slug_code_mode column from config_mcp_clients: %w", err)
 			}
 			return nil
 		},
