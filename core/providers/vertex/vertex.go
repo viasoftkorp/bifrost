@@ -274,8 +274,9 @@ func (provider *VertexProvider) getAuthTokenSource(key schemas.Key) (oauth2.Toke
 		var meta struct {
 			Type string `json:"type"`
 		}
+		// sonic's syntax error quotes the input, so it must not reach the error text.
 		if err := sonic.Unmarshal(jsonData, &meta); err != nil {
-			return nil, fmt.Errorf("failed to parse auth credentials JSON: %w", err)
+			return nil, fmt.Errorf("failed to parse auth credentials JSON: invalid JSON")
 		}
 
 		// Map string to google.CredentialsType with a security whitelist
@@ -362,13 +363,18 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	pageToken := ""
 
 	// Getting oauth2 token
+	// An API-key-only key gets here only on an unfiltered listing; "not supported" keeps ListAllModels treating it as expected.
+	authHint := " for list models"
+	if vertexKeyUsesAPIKeyOnly(key) {
+		authHint = " (api key auth not supported for list models)"
+	}
 	tokenSource, err := provider.getAuthTokenSource(key)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error creating auth token source (api key auth not supported for list models)", err)
+		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("error creating auth token source%s: %v", authHint, err), err)
 	}
 	token, err := tokenSource.Token()
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error getting token (api key auth not supported for list models)", err)
+		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("error getting auth token%s: %v", authHint, err), err)
 	}
 
 	// Iterate over all supported Vertex publishers to include Google, Anthropic, and Mistral models

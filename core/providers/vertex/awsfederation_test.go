@@ -559,6 +559,22 @@ func TestGetAuthTokenSource_AWSExternalAccountJSONUsesSDKChain(t *testing.T) {
 	assert.Contains(t, err.Error(), "aws2")
 }
 
+// Malformed auth_credentials must not reach the error text: sonic quotes the input around the
+// syntax error, and that text lands in logs, the UI key status and API error bodies.
+func TestGetAuthTokenSource_MalformedCredentialsNotEchoed(t *testing.T) {
+	provider := &VertexProvider{}
+	secret := "PRIVATEKEYMATERIAL"
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		AuthCredentials: *schemas.NewSecretVar(`{"type":"service_account","private_key":"` + secret + `" oops}`),
+	}}
+	t.Cleanup(func() { provider.removeVertexClient(key) })
+
+	_, err := provider.getAuthTokenSource(key)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse auth credentials JSON")
+	assert.NotContains(t, err.Error(), secret)
+}
+
 // TestGetAuthTokenSource_ADCPointsAtAWSExternalAccount covers the other way the gcloud file is
 // deployed: GOOGLE_APPLICATION_CREDENTIALS naming it, with auth_credentials left empty.
 func TestGetAuthTokenSource_ADCPointsAtAWSExternalAccount(t *testing.T) {
