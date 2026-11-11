@@ -13,8 +13,9 @@ import (
 //
 //   - it never SYNTHESIZES a marker, because inventing one spends a checkpoint out of a
 //     budget of four and changes the caller's billing profile behind their back; and
-//   - it deliberately COLLAPSES markers, keeping only the last one in a message, since an
-//     intermediate marker buys nothing that the final one does not already cover.
+//   - it deliberately DROPS intermediate markers, keeping only the last one in a message, on
+//     the block the caller put it on, since an earlier marker buys nothing the last one does
+//     not already cover.
 //
 // Only the first is a losslessness guarantee. The second is a documented, intentional loss.
 
@@ -63,7 +64,7 @@ func TestInlineMidConversationSystem_NeverSynthesizesAMarker(t *testing.T) {
 	})
 }
 
-func TestInlineMidConversationSystem_CollapsesMarkersOntoTheLastBlock(t *testing.T) {
+func TestInlineMidConversationSystem_KeepsOnlyTheLastMarker(t *testing.T) {
 	t.Run("intermediate markers are dropped", func(t *testing.T) {
 		// Distinct TTLs so the surviving marker can be identified, not merely counted.
 		first := cachedBlockTTL("first", "1h")
@@ -84,10 +85,10 @@ func TestInlineMidConversationSystem_CollapsesMarkersOntoTheLastBlock(t *testing
 		assert.NotEqual(t, *first.CacheControl, *surviving, "the earlier marker must not be the one kept")
 	})
 
-	// The marker RELOCATES when the caller's last marked block is not the last block. The
-	// final block still closes over every preceding one, so the cached prefix is unchanged
-	// or longer, never shorter.
-	t.Run("a trailing unmarked block inherits the marker", func(t *testing.T) {
+	// Claude Code marks its token-budget reminder and sends a short nudge after it, which it
+	// drops on the next turn. A marker moved onto the nudge writes a checkpoint covering text
+	// no later request carries, so every turn re-writes the conversation instead of reading it.
+	t.Run("the marker stays on the block the caller marked", func(t *testing.T) {
 		marked := cachedBlockTTL("first", "1h")
 		msg := inlineMidConversationSystem(&AnthropicContent{ContentBlocks: []AnthropicContentBlock{
 			marked,
@@ -97,10 +98,24 @@ func TestInlineMidConversationSystem_CollapsesMarkersOntoTheLastBlock(t *testing
 		require.Len(t, msg.Content.ContentBlocks, 2)
 		assert.Equal(t, 1, markedBlockCount(msg))
 
-		moved := msg.Content.ContentBlocks[1].CacheControl
-		require.NotNil(t, moved, "the marker moves to the final block rather than being dropped outright")
-		assert.Equal(t, *marked.CacheControl, *moved,
-			"the caller's marker moves verbatim, TTL included; a default marker here would "+
-				"silently downgrade a 1h request to the 5m default")
+		kept := msg.Content.ContentBlocks[0].CacheControl
+		require.NotNil(t, kept, "the marker stays on the block the caller marked")
+		assert.Equal(t, *marked.CacheControl, *kept, "the caller's marker is kept verbatim, TTL included")
+		assert.Nil(t, msg.Content.ContentBlocks[1].CacheControl, "the trailing block must not inherit the marker")
 	})
+}
+
+// A marked block whose text ends in whitespace stops matching once the content after it in the
+// same turn changes: live on Bedrock InvokeModel and Converse, a "\n"-terminated reminder followed
+// by a trailer read 0 cached tokens on the next turn, the same text without it read the full prefix.
+func TestInlineMidConversationSystem_EnvelopeHasNoTrailingWhitespace(t *testing.T) {
+	msg := inlineMidConversationSystem(&AnthropicContent{ContentBlocks: []AnthropicContentBlock{
+		cachedBlock("<total_tokens>812345 tokens left</total_tokens>"),
+		plainTextBlock("keep going"),
+	}})
+	require.NotNil(t, msg)
+	require.Len(t, msg.Content.ContentBlocks, 2)
+	assert.Equal(t, "<system-reminder>\n<total_tokens>812345 tokens left</total_tokens>\n</system-reminder>",
+		*msg.Content.ContentBlocks[0].Text)
+	assert.Equal(t, "<system-reminder>\nkeep going\n</system-reminder>", *msg.Content.ContentBlocks[1].Text)
 }

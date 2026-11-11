@@ -2017,10 +2017,11 @@ func newBedrockCachePoint(ttl *string) *BedrockCachePoint {
 
 // convertChatSystemReminderToBedrockUserMessage is the Chat Completions twin of
 // convertBifrostSystemReminderToBedrockUserMessage: a mid-conversation role:"system" chat message
-// rendered as a user turn, each text wrapped in the <system-reminder> envelope, with only the LAST
-// breakpoint kept as a trailing cachePoint (an intermediate marker inside one message closes over
-// nothing the final one does not, and would burn one of the four checkpoints). The breakpoint is
-// taken from either dialect: a cache_control on a text block, or a standalone cachePoint block.
+// rendered as a user turn, each text wrapped in the <system-reminder> envelope (no trailing newline,
+// see convertBifrostSystemReminderToBedrockUserMessage), with only the LAST breakpoint kept, as a
+// cachePoint right after the text it closes over (an intermediate marker inside one message closes
+// over nothing the final one does not, and would burn one of the four checkpoints). The breakpoint
+// is taken from either dialect: a cache_control on a text block, or a standalone cachePoint block.
 // Text-only, like the `system` branch it replaces. Returns nil when the message yields no text.
 func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *BedrockMessage {
 	if msg.Content == nil {
@@ -2028,7 +2029,7 @@ func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *Bed
 	}
 	var contentBlocks []BedrockContentBlock
 	wrap := func(text string) {
-		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>\n"
+		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>"
 		contentBlocks = append(contentBlocks, BedrockContentBlock{Text: &wrapped})
 	}
 	// Whichever breakpoint comes last wins, in whichever dialect it arrived: a cache_control on a
@@ -2036,7 +2037,7 @@ func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *Bed
 	// (Converse-native, and the form convertSystemMessages preserves on the hoisted path). Reading
 	// only the first kind drops the boundary a Converse-native client asked for.
 	var lastBreakpointTTL *string
-	haveBreakpoint := false
+	breakpointAt := -1
 	if msg.Content.ContentStr != nil {
 		if *msg.Content.ContentStr != "" {
 			wrap(*msg.Content.ContentStr)
@@ -2046,20 +2047,22 @@ func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *Bed
 			if block.Text != nil && *block.Text != "" {
 				wrap(*block.Text)
 				if block.CacheControl != nil {
-					lastBreakpointTTL, haveBreakpoint = block.CacheControl.TTL, true
+					lastBreakpointTTL, breakpointAt = block.CacheControl.TTL, len(contentBlocks)
 				}
 				continue
 			}
 			if block.CachePoint != nil {
-				lastBreakpointTTL, haveBreakpoint = block.CachePoint.TTL, true
+				lastBreakpointTTL, breakpointAt = block.CachePoint.TTL, len(contentBlocks)
 			}
 		}
 	}
 	if len(contentBlocks) == 0 {
 		return nil
 	}
-	if haveBreakpoint {
-		contentBlocks = append(contentBlocks, BedrockContentBlock{CachePoint: newBedrockCachePoint(lastBreakpointTTL)})
+	if breakpointAt >= 0 {
+		// A cachePoint ahead of every text still follows at least the first one, so the message
+		// never opens with a cachePoint.
+		contentBlocks = slices.Insert(contentBlocks, max(breakpointAt, 1), BedrockContentBlock{CachePoint: newBedrockCachePoint(lastBreakpointTTL)})
 	}
 	return &BedrockMessage{Role: BedrockMessageRoleUser, Content: contentBlocks}
 }

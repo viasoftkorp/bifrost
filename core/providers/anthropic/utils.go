@@ -1891,8 +1891,10 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 		return nil
 	}
 
+	// No trailing newline: a cached block ending in whitespace stops matching once the content
+	// after it in the same turn changes (Claude Code drops its trailing reminder on the next turn).
 	wrap := func(text string) string {
-		return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+		return "<system-reminder>\n" + text + "\n</system-reminder>"
 	}
 
 	var blocks []AnthropicContentBlock
@@ -1906,19 +1908,21 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 		// prompt_cache config. Conversion paths like this one never synthesize a marker, so a
 		// request either carries the caller's intent or the operator's, never a third thing
 		// invented mid-translation. Note that "never synthesizes" is the guarantee, not
-		// "never drops": the loop below deliberately collapses intermediate markers onto the
-		// last block, for the reasons stated there. Adding is what changes the caller's cost
-		// profile behind their back; collapsing a redundant marker does not.
+		// "never drops": the loop below deliberately drops intermediate markers, for the
+		// reasons stated there. Adding is what changes the caller's cost profile behind their
+		// back; dropping a redundant marker does not.
 		blocks = append(blocks, AnthropicContentBlock{
 			Type: AnthropicContentBlockTypeText,
 			Text: schemas.Ptr(wrap(*content.ContentStr)),
 		})
 	}
-	// Only the LAST breakpoint in the message is kept, matching the Bedrock converter. Within a
-	// single message an intermediate marker buys nothing — one on the final block already closes
-	// over every preceding block, and the message is atomic so no later request can diverge in its
-	// middle — while still consuming one of the four checkpoints the API allows per request.
+	// Only the LAST breakpoint in the message is kept, matching the Bedrock converter: an earlier
+	// marker in the same message closes over nothing the last one does not, and still consumes one
+	// of the four checkpoints the API allows per request. It stays on the block the caller marked.
+	// Text after it is not part of the checkpoint, and Claude Code drops such a trailing reminder on
+	// the next turn, so moving the marker onto it writes a prefix no later request matches.
 	var lastCacheControl *schemas.CacheControl
+	marked := -1
 	for _, block := range content.ContentBlocks {
 		if block.Text == nil || *block.Text == "" {
 			continue
@@ -1928,15 +1932,15 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 			Text: schemas.Ptr(wrap(*block.Text)),
 		})
 		if block.CacheControl != nil {
-			lastCacheControl = block.CacheControl
+			lastCacheControl, marked = block.CacheControl, len(blocks)-1
 		}
 	}
 
 	if len(blocks) == 0 {
 		return nil
 	}
-	if lastCacheControl != nil {
-		blocks[len(blocks)-1].CacheControl = lastCacheControl
+	if marked >= 0 {
+		blocks[marked].CacheControl = lastCacheControl
 	}
 
 	return &AnthropicMessage{

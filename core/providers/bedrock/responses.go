@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -4556,7 +4557,8 @@ func convertBifrostMessageToBedrockSystemMessages(msg *schemas.ResponsesMessage)
 
 // convertBifrostSystemReminderToBedrockUserMessage renders a mid-conversation role=system reminder
 // as a user message (Bedrock has no message-level system role), wrapping each text block in the
-// same <system-reminder>\n...\n</system-reminder>\n envelope Claude Code uses for pre-wrapped ones.
+// <system-reminder>\n...\n</system-reminder> envelope. No trailing newline: a cached block ending in
+// whitespace stops matching once the content after it in the same turn changes.
 // Returns nil for content that yields no text, so the caller skips the append.
 func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMessage) *BedrockMessage {
 	if msg.Content == nil {
@@ -4565,15 +4567,16 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 
 	var contentBlocks []BedrockContentBlock
 	wrap := func(text string) {
-		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>\n"
+		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>"
 		contentBlocks = append(contentBlocks, BedrockContentBlock{Text: &wrapped})
 	}
-	// Only the LAST breakpoint in a reminder is emitted. Within a single message an intermediate
-	// cachePoint buys nothing — a marker at the end already closes over every preceding block, and
-	// the message is atomic so no later request can diverge in its middle — while still consuming
-	// one of the four checkpoints Bedrock allows per request. Collapsing to one keeps a
-	// pathological reminder from crowding out the system and tool-result anchors.
+	// Only the LAST breakpoint in a reminder is emitted: an earlier cachePoint in the same message
+	// closes over nothing the last one does not, while still consuming one of the four checkpoints
+	// Bedrock allows per request. It closes over the block the caller marked, not the end of the
+	// message: Claude Code drops a reminder trailing its breakpoint on the next turn, so a
+	// cachePoint after that trailer writes a prefix no later request matches.
 	var lastCacheControl *schemas.CacheControl
+	marked := -1
 
 	// Text-only by design: reminders never carry images.
 	//
@@ -4603,7 +4606,7 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 			if block.Text != nil {
 				wrap(*block.Text)
 				if block.CacheControl != nil {
-					lastCacheControl = block.CacheControl
+					lastCacheControl, marked = block.CacheControl, len(contentBlocks)-1
 				}
 			}
 		}
@@ -4616,8 +4619,8 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 	// Per Converse semantics a cachePoint element terminates the cacheable prefix rather than
 	// opening one, so it follows the text it closes over — the same ordering every sibling call
 	// site in this file already uses for tool_use and tool_result blocks.
-	if lastCacheControl != nil {
-		contentBlocks = append(contentBlocks, BedrockContentBlock{
+	if marked >= 0 {
+		contentBlocks = slices.Insert(contentBlocks, marked+1, BedrockContentBlock{
 			CachePoint: newBedrockCachePoint(lastCacheControl.TTL),
 		})
 	}

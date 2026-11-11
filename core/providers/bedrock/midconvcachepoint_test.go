@@ -575,7 +575,7 @@ func TestToBedrockChatCompletionRequest_ReminderWithNoPrecedingUserTurn(t *testi
 		}
 	}
 	const reminder = "<total_tokens>15000000 tokens left</total_tokens>"
-	const wrapped = "<system-reminder>\n<total_tokens>15000000 tokens left</total_tokens>\n</system-reminder>\n"
+	const wrapped = "<system-reminder>\n<total_tokens>15000000 tokens left</total_tokens>\n</system-reminder>"
 
 	// Leading system prompt, a user turn, an assistant turn, then the reminder. In every case
 	// below the reminder has no preceding user turn to fold back into.
@@ -765,4 +765,84 @@ func TestToBedrockChatCompletionRequest_MidConversationReminderKeepsStandaloneCa
 			}
 		})
 	}
+}
+
+// Claude Code marks its token-budget reminder and sends a one-line nudge after it in the same
+// system run, then drops the nudge on the next turn. Live on Bedrock (Converse and InvokeModel)
+// the next turn reads 0 cached tokens unless (a) the cachePoint closes over the marked block, not
+// the nudge, and (b) the marked text does not end in whitespace. Both twins are covered.
+func TestInlinedSystemReminder_CachePointStaysOnMarkedBlock(t *testing.T) {
+	const budget = "<total_tokens>812345 tokens left</total_tokens>"
+	const nudge = "keep going"
+
+	// reminderMessage returns the converted message carrying the budget reminder.
+	reminderMessage := func(t *testing.T, messages []bedrock.BedrockMessage) bedrock.BedrockMessage {
+		t.Helper()
+		for _, msg := range messages {
+			for _, block := range msg.Content {
+				if block.Text != nil && strings.Contains(*block.Text, budget) {
+					return msg
+				}
+			}
+		}
+		t.Fatalf("no converted message carries the budget reminder")
+		return bedrock.BedrockMessage{}
+	}
+	assertShape := func(t *testing.T, msg bedrock.BedrockMessage) {
+		t.Helper()
+		var at, cachePoints int
+		at = -1
+		for i, block := range msg.Content {
+			if block.Text != nil {
+				assert.False(t, strings.HasSuffix(*block.Text, "\n"), "an inlined reminder must not end in whitespace: %q", *block.Text)
+				if strings.Contains(*block.Text, budget) {
+					at = i
+				}
+			}
+			if block.CachePoint != nil {
+				cachePoints++
+			}
+		}
+		require.Equal(t, 1, cachePoints, "one breakpoint in, one cachePoint out")
+		require.GreaterOrEqual(t, at, 0)
+		require.Greater(t, len(msg.Content), at+2, "the nudge must still follow the cachePoint")
+		assert.NotNil(t, msg.Content[at+1].CachePoint, "the cachePoint must close over the marked block, not the nudge")
+		require.NotNil(t, msg.Content[at+2].Text)
+		assert.Contains(t, *msg.Content[at+2].Text, nudge)
+	}
+
+	t.Run("responses", func(t *testing.T) {
+		input := []schemas.ResponsesMessage{
+			leadingSystemMsg(),
+			userReminderTextMsg("Analyze this."),
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					cachedTextBlock(budget),
+					{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr(nudge)},
+				}},
+			},
+		}
+		messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), anthropicModel, input, true)
+		require.NoError(t, err)
+		assertShape(t, reminderMessage(t, messages))
+	})
+
+	t.Run("chat", func(t *testing.T) {
+		req, err := bedrock.ToBedrockChatCompletionRequest(&schemas.BifrostContext{}, &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    anthropicModel,
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("You are Claude Code.")}},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Analyze this.")}},
+				{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(budget), CacheControl: &schemas.CacheControl{Type: "ephemeral"}},
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(nudge)},
+				}}},
+			},
+		})
+		require.NoError(t, err)
+		assertShape(t, reminderMessage(t, req.Messages))
+	})
 }
