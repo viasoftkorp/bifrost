@@ -385,9 +385,16 @@
                 "icon": "fingerprint",
                 "pages": [
                   "enterprise/workload-identity/overview",
-                  "enterprise/workload-identity/entra",
-                  "enterprise/workload-identity/aws",
-                  "enterprise/workload-identity/oidc"
+                  {
+                    "group": "Trusted Issuers",
+                    "icon": "certificate",
+                    "pages": [
+                      "enterprise/workload-identity/trusted-issuers",
+                      "enterprise/workload-identity/aws",
+                      "enterprise/workload-identity/oidc"
+                    ]
+                  },
+                  "enterprise/workload-identity/azure"
                 ]
               },
               "enterprise/virtual-mcps",
@@ -2757,6 +2764,10 @@
     {
       "source": "/enterprise/setting-up-entra",
       "destination": "/enterprise/setting-up-entra/oidc"
+    },
+    {
+      "source": "/enterprise/workload-identity/entra",
+      "destination": "/enterprise/workload-identity/azure"
     },
     {
       "source": "/enterprise/setting-up-zitadel",

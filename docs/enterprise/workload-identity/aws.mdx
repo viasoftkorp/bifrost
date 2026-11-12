@@ -1,19 +1,18 @@
 ---
 title: "AWS"
-description: "Map AWS IAM roles to Bifrost service accounts so Lambda functions, ECS tasks, EC2 instances and EKS pods call Bifrost with a short-lived AWS token instead of a stored key."
+description: "Map AWS IAM roles and users to Bifrost service accounts so Lambda functions, ECS tasks, EC2 instances and EKS pods call Bifrost with a short-lived AWS token instead of a stored key."
 icon: "aws"
 ---
 
-With AWS IAM outbound identity federation, any workload that runs as an IAM role can ask AWS STS for a signed JWT addressed to Bifrost. The token's `sub` claim is the ARN of that role, for example `arn:aws:iam::123456789012:role/payments-batch`, and that ARN is what you map to a service account. Nothing is stored on either side: the workload uses the role credentials it already has.
+With AWS IAM outbound identity federation, any workload that runs as an IAM role or user can ask AWS STS for a signed JWT addressed to Bifrost. The token's `sub` claim is the ARN of that role or user, for example `arn:aws:iam::123456789012:role/payments-batch`, and that ARN is what you map to a service account. Nothing is stored on either side: the workload uses the credentials it already has.
 
-<Info>
-  Each AWS account has its own token issuer. Bifrost trusts only the accounts you add, never AWS as a whole.
-</Info>
+You trust each AWS account as an **AWS** [trusted issuer](/enterprise/workload-identity/trusted-issuers). Each account has its own token issuer, so Bifrost trusts only the accounts you add, never AWS as a whole.
 
 ## Prerequisites
 
 - Permission to change the AWS account's IAM settings and the workload role's policy.
-- In Bifrost, the **User Provisioning** permission to add the account as a trusted issuer, and **User Provisioning → `UpdateWorkloadIdentities`** to map roles to service accounts.
+- A Bifrost service account with an access profile for the workload.
+- In Bifrost, **User Provisioning → Update** to add the account as a trusted issuer, and **User Provisioning → `UpdateWorkloadIdentities`** to map roles to service accounts.
 
 ## Step 1: Turn on outbound identity federation
 
@@ -31,11 +30,15 @@ aws iam get-outbound-web-identity-federation-info
 
 ## Step 2: Add the account as a trusted issuer
 
-1. In Bifrost, open **User Provisioning**, edit your SSO provider, and go to **Provider Configuration → Workload identity**.
-2. Under **Additional trusted issuers**, select **Add issuer**, give it a name such as `AWS prod`, choose the **AWS** kind and paste the issuer URL. Mappings refer to the issuer by this name.
-3. Set the **audience** workloads will request tokens for. Bifrost suggests its own URL, such as `https://bifrost.example.com`.
+1. In Bifrost, open **Governance → User Provisioning**, select the gear on the **Connection** card, and scroll to **Workload identity**.
+2. Under **Additional trusted issuers**, select **Add issuer**. Give it a name such as `AWS prod`, choose the **AWS** kind and paste the issuer URL.
+3. Set **Audiences** to what workloads will request tokens for. Bifrost suggests its own URL, such as `https://bifrost.example.com`.
 4. Select **Test**. Bifrost fetches the issuer's discovery document and signing keys, so a typo or an account without federation turned on shows up here.
-5. Save the provider. Trusted issuers are part of the provider's settings, so they are replaced if you switch to another identity provider.
+5. Save the provider.
+
+<Frame caption="An AWS account trusted as an issuer. The AWS kind always names a workload by the token's sub claim.">
+  <img src="/media/workload-identity/trusted-issuer-aws.png" alt="Expanded AWS trusted issuer named AWS prod, with its issuer URL and the audience https://bifrost.example.com" />
+</Frame>
 
 ## Step 3: Let the role request tokens
 
@@ -50,9 +53,16 @@ Add `sts:GetWebIdentityToken` to the policy of the role the workload runs as: th
 
 ## Step 4: Map the role to a service account
 
-1. Open the service account under **Governance → Users** and go to **Workload identity**.
-2. Select **Add workload identity**, choose your AWS issuer, and paste the **IAM role ARN** exactly as IAM shows it. ARNs are matched exactly, including the case of the role name.
-3. Select **Add**.
+1. Open the service account under **Governance → Users** and go to **Workload identities**.
+2. Select **Add workload identity** and choose your AWS issuer under **Token from**.
+3. Paste the **IAM role or user ARN** exactly as IAM shows it. ARNs are matched exactly, including the case of the name.
+4. Select **Add**.
+
+<Frame caption="Mapping an IAM role to a service account.">
+  <img src="/media/workload-identity/add-workload-aws.png" alt="Add workload identity form with Token from set to AWS prod, IAM role or user ARN arn:aws:iam::123456789012:role/payments-batch and name payments-batch Lambda" />
+</Frame>
+
+Use the role's ARN, not a role session's. `aws sts get-caller-identity` run inside a role prints a session ARN such as `arn:aws:sts::123456789012:assumed-role/payments-batch/session`; Bifrost refuses it and tells you which role's ARN to copy from the IAM console, because tokens carry the role's ARN.
 
 ## Step 5: Call Bifrost from the workload
 
@@ -60,6 +70,7 @@ The workload requests a token from a regional STS endpoint and sends it as the b
 
 ```python
 import boto3
+import requests
 
 sts = boto3.client("sts", region_name="us-east-1")
 token = sts.get_web_identity_token(
@@ -68,13 +79,17 @@ token = sts.get_web_identity_token(
     DurationSeconds=300,
 )["WebIdentityToken"]
 
-# Authorization: Bearer <token>
+requests.post(
+    "https://bifrost.example.com/v1/chat/completions",
+    headers={"Authorization": f"Bearer {token}"},
+    json={"model": "openai/gpt-4o-mini", "messages": [{"role": "user", "content": "ping"}]},
+)
 ```
 
 Request a new token before the current one expires. `GetWebIdentityToken` is not available on the global STS endpoint, and needs a recent AWS SDK.
 
 ## Things to know
 
-- **A recreated role has the same ARN.** If a role is deleted and another is created with the same name, its tokens match the same mapping. Remove the mapping when you retire a role.
+- **A recreated role has the same ARN.** If a role is deleted and another is created with the same name, its tokens match the same mapping. Disconnect the mapping when you retire a role.
 - **One issuer per account.** Add each AWS account whose workloads should call Bifrost. Once roles are mapped on an issuer, its issuer URL can't change; add a new account as another issuer.
 - **Virtual keys keep working.** Moving a workload to AWS tokens is opt-in per workload.

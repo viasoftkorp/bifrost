@@ -1,0 +1,154 @@
+---
+title: "Trusted Issuers"
+sidebarTitle: "Overview"
+description: "Trust an AWS account or any OIDC provider as a source of workload tokens, so its workloads can be mapped to Bifrost service accounts."
+icon: "certificate"
+---
+
+A **trusted issuer** is a token issuer, other than your SSO provider's own sign-in, whose workload tokens Bifrost accepts. Once you trust an issuer, any workload holding one of its tokens addressed to Bifrost can be [mapped to a service account](/enterprise/workload-identity/overview#map-a-workload-to-a-service-account).
+
+Trusted issuers work with every SSO provider, not only Microsoft Entra. Each has one of two kinds:
+
+| Kind | Use it for | Claim that names a workload | Guide |
+|---|---|---|---|
+| **AWS** | Lambda functions, ECS tasks, EC2 instances and EKS pods, through AWS outbound identity federation. One issuer per AWS account. | `sub`, the IAM role or user ARN | [AWS](/enterprise/workload-identity/aws) |
+| **Generic OIDC** | Okta, Auth0 and Keycloak client-credentials apps, Kubernetes service accounts, GitHub Actions, and any other OIDC issuer. | The **workload ID claim** you choose | [OIDC providers](/enterprise/workload-identity/oidc) |
+
+<Info>
+  Bifrost trusts only the issuers you add, by exact URL. Adding an AWS account trusts that account's tokens, never AWS as a whole.
+</Info>
+
+## Where trusted issuers live
+
+Trusted issuers are part of your SSO provider's settings. Open **Governance → User Provisioning**, select the gear on the **Connection** card, and scroll to **Workload identity** at the end of **Provider Configuration**.
+
+<Frame caption="The Workload identity section of an Entra SSO provider: Azure workload identity federation on top, then the additional trusted issuers.">
+  <img src="/media/workload-identity/provider-workload-identity.png" alt="Workload identity section of the provider configuration, with the Azure workload identity federation notice and two additional trusted issuers: AWS prod and GitHub Actions" />
+</Frame>
+
+With Entra as your SSO provider, the section also shows [Azure workload identity federation](/enterprise/workload-identity/azure). With any other provider, it shows only **Additional trusted issuers**.
+
+Because issuers are saved with the provider, they need the **User Provisioning → Update** permission, and they are replaced if you switch to another identity provider.
+
+## Add a trusted issuer
+
+<Steps>
+  <Step title="Add the issuer">
+    Under **Additional trusted issuers**, select **Add issuer** and fill in its fields:
+
+    | Field | What to enter |
+    |---|---|
+    | **Name** | A name unique among this provider's issuers, ignoring case, such as `AWS prod`. Mappings refer to the issuer by this name, and **Token from** lists it. |
+    | **Kind** | **AWS** or **Generic OIDC**. |
+    | **Issuer URL** | The issuer exactly as its tokens carry it in `iss`. It must be https (http only on localhost) with no user info, query or fragment. |
+    | **Audiences** | What workloads request their tokens for, usually Bifrost's own URL. Separate several with commas. A token must carry one of them in `aud`. |
+    | **Workload ID claim** | Generic OIDC only. The claim whose value you enter when mapping a workload, such as `cid`, `azp` or `sub`. AWS always uses `sub`. |
+
+    <Frame caption="An AWS issuer: the kind fixes the claim, so only the name, issuer URL and audiences are needed.">
+      <img src="/media/workload-identity/trusted-issuer-aws.png" alt="Expanded AWS trusted issuer named AWS prod, with its kind, issuer URL ending in tokens.sts.global.api.aws and audience https://bifrost.example.com" />
+    </Frame>
+  </Step>
+  <Step title="Test the issuer">
+    Select **Test** next to the issuer URL. Bifrost fetches the issuer's discovery document and signing keys, so a typo, a wrong URL or an AWS account without federation turned on shows up before you save.
+
+    <Frame caption="A Generic OIDC issuer for GitHub Actions after a successful test.">
+      <img src="/media/workload-identity/trusted-issuer-generic-test.png" alt="Expanded Generic OIDC trusted issuer named GitHub Actions, with issuer URL https://token.actions.githubusercontent.com, a success message reading Found the discovery document. Signing keys: 4, the audience and sub as the workload ID claim" />
+    </Frame>
+
+    If the test fails, it says why, such as an HTTP error, a discovery document naming another issuer, or an address the gateway's outbound network policy blocks.
+  </Step>
+  <Step title="Save the provider">
+    Continue through the wizard and save. The issuer then appears under **Token from** when you [map a workload](/enterprise/workload-identity/overview#map-a-workload-to-a-service-account).
+  </Step>
+</Steps>
+
+To stop accepting an issuer's tokens without losing its mappings, turn off **Trust this issuer**, the switch on its row.
+
+## Tell people's tokens apart
+
+A Generic OIDC issuer takes a token only when its workload ID is mapped to a service account. Every other token, including your people's when the same provider runs your SSO, goes to the normal sign-in path untouched. So a generic issuer usually needs no rule.
+
+The exception is your SSO app's own client ID. People's tokens carry it too, so mapping it would let anyone who signs in run as that service account. Bifrost refuses that mapping until the issuer has a rule that only workload tokens pass. Turn on **Tell people's tokens apart with a rule** and set **Only accept tokens where**:
+
+<Frame caption="An Okta issuer whose rule accepts only tokens where cid equals the token's sub, which holds for client-credentials tokens but not for a person's.">
+  <img src="/media/workload-identity/trusted-issuer-people-rule.png" alt="Generic OIDC issuer named Okta workloads with workload ID claim cid, the Tell people's tokens apart with a rule switch on, and the rule cid equals the token's sub" />
+</Frame>
+
+| Provider | Rule |
+|---|---|
+| Okta | `cid` equals the token's `sub` |
+| Auth0 | `gty` equals `client-credentials` |
+| Keycloak | `preferred_username` starts with `service-account-` |
+
+Bifrost also refuses a provider save that removes the rule while such a mapping exists. A mapping that loses its rule another way, such as through `config.json`, shows **Needs a people rule** and takes no tokens until the rule is back.
+
+## How mappings follow an issuer
+
+Mappings refer to an issuer by its **name**. Each mapping also records the issuer's kind, URL and workload ID claim from when it was made, so a mapping never silently moves to a different issuer:
+
+- While any workload is mapped on an issuer, Bifrost refuses a provider save that changes its kind, issuer URL or workload ID claim. Disconnect those mappings first, or add the new issuer under another name.
+- Renaming or removing an issuer is allowed. Its mappings take no tokens, and show the issuer as turned off or removed, until an issuer with that name is back.
+- If an issuer changes anyway, for example in `config.json`, its mappings show that the issuer changed and take no tokens until you map the workloads again.
+
+## Declarative configuration
+
+Trusted issuers can live in `config.json`, or in Helm values under `bifrost.scim.config`, on the SSO provider under `workloadIdentity.additionalTrustedIssuers`. Mappings can't: workloads are mapped to service accounts in the dashboard or through the API.
+
+```json
+{
+  "scim_config": {
+    "enabled": true,
+    "provider": "okta",
+    "config": {
+      "issuerUrl": "https://acme.okta.com",
+      "clientId": "env.OKTA_CLIENT_ID",
+      "clientSecret": "env.OKTA_CLIENT_SECRET",
+      "workloadIdentity": {
+        "additionalTrustedIssuers": [
+          {
+            "name": "AWS prod",
+            "kind": "aws",
+            "issuerUrl": "https://<id>.tokens.sts.global.api.aws",
+            "audiences": ["https://bifrost.example.com"]
+          },
+          {
+            "name": "GitHub Actions",
+            "kind": "generic",
+            "issuerUrl": "https://token.actions.githubusercontent.com",
+            "audiences": ["https://bifrost.example.com"],
+            "identityClaim": "sub",
+            "machineCheck": { "kind": "any" }
+          },
+          {
+            "name": "Okta workloads",
+            "kind": "generic",
+            "issuerUrl": "https://acme.okta.com/oauth2/default",
+            "audiences": ["api://bifrost"],
+            "identityClaim": "cid",
+            "machineCheck": { "kind": "sub_equals_claim", "claim": "cid" }
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+| Field | Notes |
+|---|---|
+| `name`, `kind`, `issuerUrl`, `audiences` | Required. `kind` is `aws` or `generic`. |
+| `identityClaim` | Required for `generic`; AWS always uses `sub`. |
+| `machineCheck` | Required for `generic`. `{"kind": "any"}` takes only tokens whose workload ID is mapped. A rule is `sub_equals_claim`, `claim_equals` or `claim_prefix` with its `claim` and, for the last two, a non-empty `value`. |
+| `maxLifetimeSeconds` | Optional cap on a token's total lifetime, between 300 and 172800. The default is 24 hours. |
+| `disabled` | Optional. `true` keeps the issuer and its mappings but refuses its tokens. |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="AWS" icon="aws" href="/enterprise/workload-identity/aws">
+    Turn on outbound identity federation, trust the account, and map IAM roles.
+  </Card>
+  <Card title="OIDC providers" icon="key" href="/enterprise/workload-identity/oidc">
+    Okta, Auth0, Keycloak, Kubernetes and GitHub Actions.
+  </Card>
+</CardGroup>

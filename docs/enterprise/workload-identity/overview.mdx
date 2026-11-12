@@ -1,106 +1,153 @@
 ---
 title: "Workload Identity"
-description: "Let CI pipelines and cloud workloads call Bifrost with a short-lived token from their own platform, running as a service account, with no keys stored in Bifrost."
+sidebarTitle: "Overview"
+description: "Let CI pipelines and cloud workloads call Bifrost with a short-lived token from their own platform, running as a service account, without storing a Bifrost virtual key."
 icon: "fingerprint"
 ---
 
-Workload identity federation lets a non-human caller, such as a CI pipeline, an AKS service, an AWS Lambda or an internal batch job, call Bifrost's inference endpoints without a stored virtual key. The workload sends a short-lived token its own platform issues, and Bifrost runs the request as the **service account** the workload is mapped to. That service account's access profile decides the models, MCP tools, budget and rate limits, and logs and audit entries name it.
+A CI pipeline, an AKS service, an AWS Lambda or an internal batch job usually calls Bifrost with a virtual key. That key is a long-lived secret: someone has to store it in the workload, rotate it, and revoke it when it leaks.
 
-Workload identities only ever map to service accounts, never to people.
-
-| Source | Workload is named by | Setup |
-|---|---|---|
-| Azure workload identity federation (when SSO is Microsoft Entra) | The service principal's object ID | [Microsoft Entra](./entra) |
-| AWS IAM roles (outbound identity federation), as an additional trusted issuer | The IAM role ARN | [AWS](./aws) |
-| Any OIDC provider (Okta, Auth0, Keycloak and others), as an additional trusted issuer | A claim you choose, such as the client ID | [OIDC providers](./oidc) |
+**Workload identity** removes the key. The workload sends a short-lived token that its own platform already issues, such as an Entra managed identity token, an AWS STS token or a GitHub Actions OIDC token. Bifrost checks that the token comes from a source you trust, looks up which **service account** that workload is mapped to, and runs the request as that service account. The service account's access profile decides the models, MCP tools, budget and rate limits, and logs and audit entries name it.
 
 <Info>
-  Tokens are verified on every request and are never stored. A workload's access ends when its token expires and it can't get a new one, or as soon as you disable or remove its mapping.
+  Workload identity is about callers authenticating **to** Bifrost. It is separate from how Bifrost authenticates to model providers, such as IRSA or GKE Workload Identity for Bedrock and Vertex AI.
 </Info>
 
 ## How it works
 
-1. The workload asks its platform for a token addressed to Bifrost: an app-only Entra token for the Bifrost SSO app, an AWS STS web identity token, or a client-credentials token from your identity provider.
-2. It calls an inference endpoint with `Authorization: Bearer <token>` and no virtual key.
-3. Bifrost checks that the token comes from a source it trusts (its `iss` must match exactly), is addressed to Bifrost, and belongs to a workload: Entra takes only app-only tokens, and a generic issuer takes only tokens that pass its rule or, without one, whose workload ID is mapped. Anything else, including a person's token, is left to the normal sign-in path, even when the same identity provider runs your SSO.
-4. Bifrost verifies the signature against the source's published keys, then the expiry and lifetime.
-5. It looks up the mapping for the token's identity, such as the object ID, role ARN or client ID. Entra object IDs match whatever their case; an issuer's workload IDs, role ARNs included, match exactly as the token carries them.
-6. The request runs as the mapped service account. The token is removed from the request, so it is never forwarded to a provider.
+```mermaid
+sequenceDiagram
+    participant W as Workload<br/>(pipeline, pod, Lambda)
+    participant P as Its platform<br/>(Entra, AWS STS, Okta, GitHub…)
+    participant B as Bifrost
+    participant SA as Service account<br/>+ access profile
 
-Workload identity turns on once at least one mapping exists. Until then, every request goes through the rest of authentication unchanged.
-
-## Trusted issuers
-
-Azure workload identity federation is available whenever your SSO provider is Microsoft Entra. Other sources are **additional trusted issuers**, set on the SSO provider: open **User Provisioning**, edit the provider, and go to **Provider Configuration → Workload identity**. For each issuer, give it a name, choose AWS or Generic OIDC, paste the issuer URL exactly as its tokens carry it in `iss`, and set the audience workloads request tokens for, usually Bifrost's own URL. Select **Test** to have Bifrost fetch the issuer's discovery document and signing keys before you save. If the test fails, it says why, such as an HTTP error, a discovery document naming another issuer, or an address the gateway's outbound network policy blocks.
-
-AWS fixes the claim that names a workload: the IAM role ARN. A generic issuer names its **workload ID claim**. Without a rule it takes only tokens whose workload ID is mapped, so it needs no rule to tell people apart unless you map your SSO app's own client ID (see [OIDC providers](./oidc)). Trusted issuers are part of the provider's settings: they are saved with it, need the **User Provisioning** permission, and are replaced if you switch to another identity provider. Turning an issuer off refuses its tokens and keeps its mappings.
-
-Mappings refer to an issuer by its **name**, which is unique among the provider's issuers, ignoring case. Each mapping also records the issuer's kind, URL and workload ID claim from when it was made, so a mapping never moves to a different issuer:
-
-- While any workload is mapped on an issuer, Bifrost refuses a provider save that changes its kind, issuer URL or workload ID claim. Disconnect those mappings first, or add the new issuer under another name.
-- Renaming or removing an issuer is allowed. Its mappings take no tokens, and show the issuer as unavailable, until an issuer with that name is back.
-- If an issuer changes anyway, for example in `config.json`, its mappings show that the issuer changed and take no tokens until you map the workloads again.
-
-## Mapping a workload
-
-Open the service account under **Governance → Users**, go to **Workload identity**, and select **Add workload identity**. Choose where the token comes from, then identify the workload:
-
-- **Azure workload identity federation:** search the Entra directory for the managed identity or app, or paste its object ID. Its name is taken from Entra.
-- **An additional trusted issuer:** enter the role ARN, client ID or other identity the issuer's kind names, exactly as tokens carry it.
-
-After adding, the workload can call Bifrost straight away, and its requests appear in the logs under the service account. A workload identity maps to one service account; several workloads can map to the same one. Deleting a service account removes its mappings.
-
-You can also manage a service account's mappings through the API, at `/api/governance/users/{user_id}/workload-identities`.
-
-## Declarative configuration
-
-Trusted issuers can live in `config.json`, or in Helm values under `bifrost.scim.config`, on the SSO provider under `workloadIdentity.additionalTrustedIssuers`. Mappings can't: workloads are mapped to service accounts in the dashboard or through the API.
-
-```json
-{
-  "scim_config": {
-    "enabled": true,
-    "provider": "entra",
-    "config": {
-      "tenantId": "00000000-0000-0000-0000-000000000000",
-      "clientId": "env.ENTRA_CLIENT_ID",
-      "workloadIdentity": {
-        "additionalTrustedIssuers": [
-          {
-            "name": "AWS prod",
-            "kind": "aws",
-            "issuerUrl": "https://<id>.tokens.sts.global.api.aws",
-            "audiences": ["https://bifrost.example.com"]
-          },
-          {
-            "name": "Okta workloads",
-            "kind": "generic",
-            "issuerUrl": "https://acme.okta.com/oauth2/default",
-            "audiences": ["api://bifrost"],
-            "identityClaim": "cid",
-            "machineCheck": { "kind": "sub_equals_claim", "claim": "cid" }
-          }
-        ]
-      }
-    }
-  }
-}
+    W->>P: Request a token addressed to Bifrost
+    P-->>W: Short-lived signed token
+    W->>B: POST /v1/chat/completions<br/>Authorization: Bearer <token>
+    B->>B: Trusted source? Signature, audience, expiry valid?
+    B->>B: Look up the mapping for the token's identity
+    B->>SA: Run the request as the mapped service account
+    SA-->>W: Response, governed by the access profile
 ```
 
-- A generic issuer needs `identityClaim` and `machineCheck`. Use `{"kind": "any"}` to take only tokens whose workload ID is mapped, or a rule (`sub_equals_claim`, `claim_equals`, `claim_prefix`) with its `claim` and, for the last two, a non-empty `value`.
-- `issuerUrl` must be https, or http on localhost for testing, with no user info, query or fragment.
-- `maxLifetimeSeconds` caps a token's total lifetime, between 300 and 172800; the default is 24 hours. `disabled: true` keeps an issuer and its mappings but refuses its tokens.
+Three pieces make this work:
+
+| Piece | What it is | Where you set it |
+|---|---|---|
+| **Token source** | Who issues the tokens Bifrost accepts: an additional **trusted issuer** (an AWS account, Okta, Auth0, Keycloak, a Kubernetes cluster, GitHub Actions or any OIDC provider), or **Azure workload identity federation** when your SSO is Microsoft Entra. | **User Provisioning**, on the SSO provider |
+| **Service account** | A non-human Bifrost user. Its access profile governs what the workload may do. | **Governance → Users** |
+| **Workload identity** | A mapping from one workload, named by a claim in its token, to one service account. | The service account's **Workload identities** tab |
+
+Workload identities only ever map to service accounts, never to people.
+
+## How tokens map to service accounts
+
+Each token source names the workload with one claim. That value is what you enter when you map the workload, and it decides which service account the request runs as.
+
+| Token source | Claim that names the workload | Example value | Matched |
+|---|---|---|---|
+| Azure workload identity federation | `oid`, the service principal's object ID | `6a1f0c3e-2b4d-4f8a-9c7e-5d3b2a1f0e9d` | Ignoring case |
+| AWS trusted issuer | `sub`, the IAM role or user ARN | `arn:aws:iam::123456789012:role/payments-batch` | Exactly |
+| Generic OIDC trusted issuer | The **workload ID claim** you choose, such as `cid`, `azp` or `sub` | `0oa1b2c3d4e5f6g7h8i9` or `repo:acme/payments:ref:refs/heads/main` | Exactly |
+
+A workload maps to one service account, and several workloads can map to the same one. For example, the AKS pod, the Lambda and the deploy workflow behind one payments service can all run as a `payments-api` service account:
+
+<Frame caption="One service account with three workloads mapped to it, one from each kind of token source.">
+  <img src="/media/workload-identity/service-account-mappings.png" alt="Service account detail sheet for payments-api showing the Workload identities tab with an Azure, an AWS and a GitHub Actions workload mapped" />
+</Frame>
+
+## Choose a token source
+
+<CardGroup cols={2}>
+  <Card title="Trusted issuers" icon="certificate" href="/enterprise/workload-identity/trusted-issuers">
+    Trust an AWS account, Okta, Auth0, Keycloak, a Kubernetes cluster, GitHub Actions or any OIDC provider. Works with every SSO provider.
+  </Card>
+  <Card title="Azure Workload Identity Federation" icon="microsoft" href="/enterprise/workload-identity/azure">
+    Map Entra managed identities and app registrations. Needs Microsoft Entra as your SSO provider.
+  </Card>
+</CardGroup>
+
+You can use both at once: with Entra SSO, Azure workloads come through Azure workload identity federation and everything else through trusted issuers.
+
+## Set it up
+
+<Steps>
+  <Step title="Create a service account">
+    Under **Governance → Users**, add a service account for the workload and attach an access profile that grants the models and tools it needs. A service account with no access profile is refused by governance, as for any user without one.
+  </Step>
+  <Step title="Trust the token source">
+    Add a [trusted issuer](/enterprise/workload-identity/trusted-issuers), or set up [Azure workload identity federation](/enterprise/workload-identity/azure) on your Entra SSO app.
+  </Step>
+  <Step title="Map the workload to the service account">
+    On the service account, add a workload identity for the token source and the workload's identity value. See [Map a workload](#map-a-workload-to-a-service-account) below.
+  </Step>
+  <Step title="Call Bifrost with the token">
+    The workload requests a token addressed to Bifrost from its platform and sends it as `Authorization: Bearer <token>`, with no virtual key. Each source's guide has client examples.
+  </Step>
+</Steps>
+
+Workload identity turns on once at least one mapping exists. Until then, every request goes through the rest of authentication unchanged, and virtual keys keep working throughout, so you can move workloads over one at a time.
+
+## Map a workload to a service account
+
+<Steps>
+  <Step title="Open the service account's Workload identities tab">
+    Under **Governance → Users**, select the service account. Open **Workload identities**; when the sheet is narrow, it sits in the overflow menu at the end of the tab bar.
+
+    <Frame caption="The Workload identities tab appears only on service accounts.">
+      <img src="/media/workload-identity/service-account-tab.png" alt="Service account detail sheet with the tab overflow menu open, showing Business Units and Workload identities" />
+    </Frame>
+  </Step>
+  <Step title="Choose where the token comes from">
+    Select **Add workload identity**. **Token from** lists Azure workload identity federation when your SSO is Entra, and every trusted issuer that is turned on, by name.
+
+    <Frame caption="Token from lists every source Bifrost can accept tokens from.">
+      <img src="/media/workload-identity/add-workload-sources.png" alt="Add workload identity form with the Token from dropdown open, listing Azure workload identity federation, AWS prod and GitHub Actions" />
+    </Frame>
+
+    If no source is set up yet, the form says so instead of showing the list.
+  </Step>
+  <Step title="Identify the workload">
+    Enter the value the token carries:
+
+    | Token from | Field | Enter |
+    |---|---|---|
+    | Azure workload identity federation | **Workload** | Pick the managed identity or app from Entra, or select **Enter an object ID instead** and paste its service principal's object ID. |
+    | An AWS issuer | **IAM role or user ARN** | The ARN exactly as IAM shows it, such as `arn:aws:iam::123456789012:role/payments-batch`. |
+    | A Generic OIDC issuer | **Workload identifier** | The value of the issuer's workload ID claim, such as a client ID or a `sub`. |
+
+    **Name** is optional and defaults to the workload's name. Select **Add**.
+  </Step>
+</Steps>
+
+The workload can call Bifrost straight away, and its requests appear in the logs under the service account.
+
+- **Turn a mapping off** with its **Enabled** switch to stop accepting the workload's tokens without losing the mapping.
+- **Disconnect** a workload from its row menu to remove the mapping. Deleting a service account removes all of its mappings.
+- **Automate** mappings through the API at `/api/governance/users/{user_id}/workload-identities`. Mappings can't be set in `config.json` or Helm; trusted issuers can.
+
+## What Bifrost checks on every request
+
+1. The token comes from a source Bifrost trusts: its `iss` matches a trusted issuer's URL exactly, or your Entra tenant.
+2. It is addressed to Bifrost: its audience is one the source is configured with.
+3. It belongs to a workload. Entra takes only app-only tokens. A generic issuer takes only tokens whose workload ID is mapped, or that pass its rule when it has one. Anything else, including a person's token, is left to the normal sign-in path, even when the same identity provider runs your SSO.
+4. The signature verifies against the source's published keys, and the token is unexpired and valid for no longer than the source's lifetime cap (24 hours by default).
+5. A mapping exists for the token's identity, it is turned on, and its source hasn't changed since it was made.
+6. The request runs as the mapped service account. The token is removed from the request, so it is never forwarded to a provider.
+
+<Info>
+  Tokens are verified on every request and are never stored. A workload's access ends when its token expires and it can't get a new one, or as soon as you turn off or disconnect its mapping.
+</Info>
 
 ## Responses
 
 | Status | When |
 |---|---|
 | `400` | A virtual key was sent together with a workload token. Send one credential. |
-| `401` | The token is invalid: bad signature, expired, issued for another audience, or valid for longer than the issuer's lifetime cap (24 hours by default). Get a new token. |
+| `401` | The token is invalid: bad signature, expired, issued for another audience, or valid for longer than the source's lifetime cap. Get a new token. |
 | `403` | The token is valid, but no service account is mapped to it, the mapping or issuer is turned off, the issuer changed since the mapping was made, or the service account was deleted. An admin needs to act. |
-| `503` | Bifrost couldn't fetch the issuer's signing keys. Retry after the `Retry-After` delay. |
-
-A service account with no access profile is refused by governance with an access-not-found error, as for any user without one.
+| `503` | Bifrost couldn't fetch the source's signing keys. Retry after the `Retry-After` delay. |
 
 ## MCP gateway
 
@@ -108,8 +155,10 @@ Workload tokens work on `/mcp` too, governed by the service account's access pro
 
 ## Permissions
 
-Viewing a service account's workload identities is part of viewing the account, so it needs **Users → View**.
+| Action | Permission |
+|---|---|
+| View a service account's workload identities | **Users → View** |
+| Add, change or disconnect a mapping, and search Entra for workloads | **User Provisioning → `UpdateWorkloadIdentities`** |
+| Add, change or test trusted issuers | **User Provisioning → Update** |
 
-Adding, changing or removing a mapping lets whoever holds the workload's token act as the service account, so it has its own permission: **User Provisioning → `UpdateWorkloadIdentities`**. The same permission covers searching the Entra directory for workloads. Admins have it by default; grant it to other roles explicitly. **Users → Update** alone is not enough.
-
-Trusted issuers are SSO provider settings: saving them, and testing one, needs **User Provisioning → Update**.
+A mapping lets whoever holds the workload's token act as the service account, so it has its own permission. Admins have it by default; grant it to other roles explicitly. **Users → Update** alone is not enough.

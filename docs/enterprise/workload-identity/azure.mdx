@@ -1,20 +1,29 @@
 ---
-title: "Microsoft Entra"
-description: "Map Azure managed identities and app registrations to Bifrost service accounts so AKS services, Azure Functions and CI pipelines call Bifrost with their Entra token."
+title: "Azure Workload Identity Federation"
+description: "Map Azure managed identities and app registrations to Bifrost service accounts so AKS services, Azure VMs and Functions, and CI pipelines call Bifrost with their Entra token."
 icon: "microsoft"
 ---
 
-With Microsoft Entra, a workload calls Bifrost with an **app-only access token** Entra issues for the Bifrost SSO app registration. This covers AKS services using Azure workload identity, Azure VMs and Functions with a managed identity, and Azure DevOps or GitHub pipelines that sign in to Entra with federated credentials. The token's `oid` claim, the object ID of the workload's service principal, is what you map to a service account.
+With Azure workload identity federation, a workload calls Bifrost with an **app-only access token** that Microsoft Entra issues for the Bifrost SSO app registration. This covers AKS services using Azure workload identity, Azure VMs and Functions with a managed identity, and Azure DevOps or GitHub pipelines that sign in to Entra with federated credentials.
 
-<Info>
-  Workload identity reuses your Entra SSO configuration: the same tenant and app registration. Set up [Entra SSO](../setting-up-entra/oidc) first. Multi-tenant (`common`) configurations are not supported.
-</Info>
+The token's `oid` claim, the object ID of the workload's service principal, is what you map to a service account. Unlike a [trusted issuer](/enterprise/workload-identity/trusted-issuers), there is nothing to add: Bifrost already trusts your Entra tenant through SSO.
 
 ## Prerequisites
 
-- Microsoft Entra SSO configured in Bifrost, with the app registration's **Application.Read.All** Graph permission granted if you want to pick workloads from Entra in the dashboard.
-- A service account in Bifrost with an access profile for the workload.
+<Card title="Microsoft Entra SSO" icon="microsoft" href="/enterprise/setting-up-entra/oidc" horizontal>
+  Azure workload identity federation reuses your Entra SSO configuration: the same tenant and app registration. Set up Entra SSO first.
+</Card>
+
+- Entra must be your SSO provider in Bifrost, with a single tenant. Multi-tenant (`common`) configurations are not supported.
+- To pick workloads from Entra in the dashboard, grant the app registration the **Application.Read.All** Graph application permission, as in [Step 5 of the Entra SSO setup](/enterprise/setting-up-entra/oidc). Without it, paste object IDs instead.
+- A Bifrost service account with an access profile for the workload.
 - In Bifrost, the **User Provisioning → `UpdateWorkloadIdentities`** permission to map workloads and search Entra for them.
+
+Once Entra SSO is set up, the provider's **Workload identity** section shows that Azure workload identity federation is available, and the scope workloads request tokens for:
+
+<Frame caption="Under Governance → User Provisioning → Connection (gear) → Workload identity. The scope comes from the App ID URI.">
+  <img src="/media/workload-identity/provider-workload-identity.png" alt="Workload identity section of the Entra provider configuration, with a notice that Entra app-only tokens can be mapped to service accounts and that workloads request a token for api://bifrost/.default" />
+</Frame>
 
 ## Step 1: Expose the Bifrost app to applications
 
@@ -25,7 +34,7 @@ Workloads request a token for the Bifrost app registration, so it needs an ident
 
 ## Step 2: Assign the workload to the Bifrost app
 
-The [Entra SSO setup](../setting-up-entra/oidc) turns on **Assignment required** for the Bifrost enterprise application, so Entra issues a token for Bifrost only to people and apps assigned to it. A workload is assigned through an app role:
+The [Entra SSO setup](/enterprise/setting-up-entra/oidc#step-7-enable-assignment-requirement) turns on **Assignment required** for the Bifrost enterprise application, so Entra issues a token for Bifrost only to people and apps assigned to it. A workload is assigned through an app role:
 
 1. In the Bifrost app registration, open **App roles** and create a role with **Allowed member types** set to **Applications**, for example with the value `Bifrost.Workload`.
 2. Assign that role to the workload's service principal. Managed identities can't be assigned in the portal, so use Microsoft Graph:
@@ -42,20 +51,24 @@ Without the assignment, Entra refuses the workload's token request with `AADSTS5
 
 ## Step 3: Map the workload to a service account
 
-1. Open the service account under **Governance → Users** and go to **Workload identity**.
-2. Select **Add workload identity** and choose **Azure workload identity federation**.
-3. Search Entra for the managed identity or app by name, or paste its service principal's object ID. Use the object ID, not the application (client) ID.
+1. Open the service account under **Governance → Users** and go to **Workload identities**.
+2. Select **Add workload identity** and choose **Azure workload identity federation** under **Token from**.
+3. Under **Workload**, search Entra for the managed identity or app by name, or select **Enter an object ID instead** and paste its service principal's object ID. Use the object ID, not the application (client) ID: Bifrost refuses a client ID and names the object ID to use.
 4. Select **Add**. The workload can call Bifrost straight away; its requests appear in the logs under the service account.
+
+<Frame caption="Mapping a managed identity by its object ID.">
+  <img src="/media/workload-identity/add-workload-azure.png" alt="Add workload identity form with Token from set to Azure workload identity federation, an object ID entered under Workload and the name AKS payments-api" />
+</Frame>
 
 For a managed identity, the object ID is its **principal ID** (`az identity show --name <identity> --resource-group <rg> --query principalId -o tsv`). For an app registration, it is the object ID of its service principal under **Enterprise applications** (`az ad sp show --id <app client ID> --query id -o tsv`), not the app registration's own object ID.
 
-To cut a workload off, turn its mapping off or remove it.
+To cut a workload off, turn its mapping off or disconnect it.
 
 ## Step 4: Call Bifrost from the workload
 
-The examples below request `api://bifrost/.default`, which assumes the App ID URI `api://bifrost`. Replace it with your own App ID URI plus `/.default`, such as `api://<client ID>/.default` if you kept Entra's suggestion; Bifrost shows the scope to use.
+The examples below request `api://bifrost/.default`, which assumes the App ID URI `api://bifrost`. Replace it with the scope Bifrost shows in the provider's **Workload identity** section: your App ID URI plus `/.default`, such as `api://<client ID>/.default` if you kept Entra's suggestion.
 
-The workload requests a token for the Bifrost app, using the scope shown in Bifrost (the App ID URI or client ID with `/.default`), and sends it as the bearer token. It has to sign in as itself, the managed identity or app you mapped: a token a person gets after a normal sign-in carries that person's identity, not the workload's, and goes through the normal sign-in path instead.
+The workload has to sign in as itself, the managed identity or app you mapped. A token a person gets after a normal sign-in carries that person's identity, not the workload's, and goes through the normal sign-in path instead.
 
 <Tabs>
   <Tab title="Python (AKS, VM, Functions)">
