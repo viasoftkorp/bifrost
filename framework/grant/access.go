@@ -269,13 +269,23 @@ func (a *Access) KeysForModel(provider string, model string) (keyIDs []string, r
 // unionKeysHeldBy is the union of the key restrictions that permits which authorize model on
 // provider hold for that provider, and whether any of them holds one at all. A permit that does not
 // authorize the pair has no say.
+//
+// Within a permit, each provider permit keeps its own model rule, as it does in ProvidersForModel: a
+// permit can hold several provider permits for one provider, and one that does not allow the model
+// lends none of its keys to it, even when another of them does. An empty model asks about the
+// provider alone, so then every provider permit for it counts.
 func (a *Access) unionKeysHeldBy(permits []schemas.Permit, provider string, model string) (keys schemas.WhiteList, holds bool) {
 	for _, permit := range permits {
 		if !a.permitAllowsModel(permit, provider, model) {
 			continue
 		}
-		for _, pp := range permit.ProviderPermits() {
+		pps := permit.ProviderPermits()
+		for i := range pps {
+			pp := &pps[i]
 			if pp.Provider != provider {
+				continue
+			}
+			if model != "" && !a.permitsModel(pp, model) {
 				continue
 			}
 			holds = true

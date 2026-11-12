@@ -598,6 +598,53 @@ func TestAccess_KeysForComposes(t *testing.T) {
 	})
 }
 
+// A permit can hold several provider permits for one provider, each with its own models and keys. The
+// keys for a model come only from the ones that allow it, on the caller's side and the scope's alike,
+// so KeysForModel agrees with the candidates ProvidersForModel offers.
+func TestAccess_KeysForKeepEachProviderPermitsModelRule(t *testing.T) {
+	split := newPermit(permitSpec{
+		Type: PermitVirtualKey, ID: "vk1", Name: "Split Key",
+		ProviderPermits: []schemas.ProviderPermit{
+			{Provider: "openai", AllowedModels: []string{"model-a"}, KeyIDs: []string{"key-a"}},
+			{Provider: "openai", AllowedModels: []string{"model-b"}, KeyIDs: []string{"key-b"}},
+		},
+	})
+
+	t.Run("on the caller's side", func(t *testing.T) {
+		access := NewAccess(held(split), nil, "", nil)
+
+		keyIDs, restricted := access.KeysForModel("openai", "model-a")
+		assert.True(t, restricted)
+		assert.Equal(t, []string{"key-a"}, keyIDs, "the provider permit allowing only model-b lends model-a none of its keys")
+
+		keyIDs, restricted = access.KeysForModel("openai", "model-b")
+		assert.True(t, restricted)
+		assert.Equal(t, []string{"key-b"}, keyIDs)
+
+		candidates := access.ProvidersForModel("model-a")
+		require.Len(t, candidates, 1)
+		assert.Equal(t, schemas.WhiteList{"key-a"}, candidates[0].KeyIDs, "the candidates agree")
+
+		keyIDs, restricted = access.KeysForModel("openai", "")
+		assert.True(t, restricted)
+		assert.Equal(t, []string{"key-a", "key-b"}, keyIDs, "the provider alone is asked about, so every provider permit for it counts")
+	})
+
+	t.Run("on the scope's side", func(t *testing.T) {
+		everyKey := newPermit(permitSpec{
+			Type: PermitAccessProfile, ID: "ap1", Name: "Every Key",
+			ProviderPermits: []schemas.ProviderPermit{
+				{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"*"}},
+			},
+		})
+		access := NewAccess(held(everyKey), split, Intersect, nil)
+
+		keyIDs, restricted := access.KeysForModel("openai", "model-a")
+		assert.True(t, restricted)
+		assert.Equal(t, []string{"key-a"}, keyIDs, "the scope's model-b provider permit does not widen model-a")
+	})
+}
+
 func TestAccess_KeysForReturnsACopy(t *testing.T) {
 	base := newPermit(permitSpec{
 		Type: PermitVirtualKey, ID: "vk1", Name: "Caller Key",
