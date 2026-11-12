@@ -8,6 +8,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### 2.1.49
+
+- Added `bifrost.client.mcpClientMetadataUrl` (`client.mcp_client_metadata_url`): where you host Bifrost's Client ID Metadata Document, for MCP servers that cannot reach Bifrost. Unset, the document is served under `mcpExternalClientUrl`.
+
 ### 2.1.48
 
 - Added `bifrost.mcp.clientConfigs[].oauthConfig.useClientMetadataDocument` (`use_client_metadata_document`): register with Bifrost's Client ID Metadata Document even when the authorization server does not advertise it.
