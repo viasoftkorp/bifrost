@@ -319618,7 +319618,7 @@
       ]
     },
     {
-      "name": "265. Request trace endpoint (log-trace) [SERIAL]",
+      "name": "345. Request trace endpoint (log-trace) [SERIAL]",
       "description": "GET /api/logs/{id}/trace serves the causal chain Warp's get_request_trace tool builds (the two now share logstore.BuildRequestTrace), so the Bifrost MCP and API clients can explain one request. The case sends one request, waits for its log row through the session listing, and requires the trace to be rooted at it with one successful openai node; an unknown id must return 404. Red before the change: the route did not exist. The seeded log is deleted at the end.",
       "item": [
         {
@@ -320365,7 +320365,7 @@
       ]
     },
     {
-      "name": "301. Per-user limits endpoints are Enterprise-only (user-limits)",
+      "name": "347. Per-user limits endpoints are Enterprise-only (user-limits)",
       "item": [
         {
           "name": "[EXPECT-404] openai user-limits: GET /api/governance/users/me/limits is absent on OSS",
@@ -320418,7 +320418,7 @@
       ]
     },
     {
-      "name": "267. Caller identity endpoint (session-me)",
+      "name": "346. Caller identity endpoint (session-me)",
       "description": "GET /api/session/me reports who a request acts for and what it may read, resolved the same way Warp scopes its tools, so API and Bifrost MCP clients can answer \"my\" and \"our\" questions. The harness calls it with its own admin credential (or none, when dashboard auth is off), which identifies no user and is unrestricted. Red before the change: the route did not exist.",
       "item": [
         {

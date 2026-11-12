@@ -12486,6 +12486,440 @@ const SYNC = SYNC_ROWS
   .flatMap((row) => SYNC_WAYS.filter((way) => !way.stickyOnly || row.sticky).map((way) => ({ row, way })))
   .map(({ row, way }, i) => syncCase(`SYNC-${String(i + 1).padStart(2, "0")}`, row, way));
 
+// ================================================================ BMC: Bifrost MCP on /v1/mcp
+
+// The Bifrost MCP serves the gateway's own HTTP API as tools on /v1/mcp, one per operation in its OpenAPI spec,
+// except the denied routes, deprecated operations and any this gateway does not route. Its requests take the /api
+// chain, so here they carry the admin credentials /api takes; every tool call becomes an in-process request into
+// /api (or the inference route) with the caller's headers. The runner sets public_base_url at boot, which the
+// Bifrost MCP needs: tool calls take their host and scheme from it, never from the caller's Host.
+const V1MCP = "/v1/mcp";
+const BMC_TEXT = "the Bifrost MCP on /v1/mcp, built from the gateway's OpenAPI spec, with public_base_url set at boot; requests carry the admin credentials /api takes";
+// BMC_WAIT holds a request until the Bifrost MCP has loaded its spec: it loads in the background after boot (and
+// after a settings change that rebuilds it) and answers 503 until then. bmc_ready skips the wait once it has loaded.
+// Retries stop at a 45s deadline, inside the runner's 60s script timeout with room for the probe in flight; a wait that
+// ends without the server serving leaves why in bmc_wait_error, which BMC_WAITED fails on.
+const BMC_WAIT = [
+  "pm.variables.set('bmc_wait_error', '');",
+  "if (pm.collectionVariables.get('bmc_ready') === '1') { return; }",
+  "var bmcDeadline = Date.now() + 45000;",
+  "function bmcPoll() {",
+  "  pm.sendRequest({ url: pm.variables.replaceIn('{{base_url}}') + '/v1/mcp', method: 'POST', header: { 'Content-Type': 'application/json', Authorization: pm.variables.get('admin_auth_header') }, body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'ping' }) } }, function (err, res) {",
+  "    if (!err && res.code === 200) { pm.collectionVariables.set('bmc_ready', '1'); return; }",
+  "    var why = err ? String(err) : res.code + ' ' + res.text().slice(0, 300);",
+  "    if ((err || res.code === 503) && Date.now() < bmcDeadline) { setTimeout(bmcPoll, 1000); return; }",
+  "    pm.variables.set('bmc_wait_error', (err || res.code === 503 ? 'not serving after 45s: ' : 'the readiness probe failed: ') + why);",
+  "  });",
+  "}",
+  "bmcPoll();",
+];
+// BMC_WAITED fails a request whose BMC_WAIT ended without the Bifrost MCP serving, with the probe's last answer.
+const BMC_WAITED = A.custom("the Bifrost MCP was serving before the wait's deadline", ["pm.expect(pm.variables.get('bmc_wait_error') || '', 'readiness').to.equal('');"]);
+// bmc sends one JSON-RPC message to /v1/mcp with the admin credentials (unless noAuth) and any extra headers.
+const bmc = (id, title, message, asserts, { headers = [], noAuth = false, raw, pre = [], extraTests = [], noCookies = false } = {}) => request(id, title, "POST", V1MCP, {
+  noAuth, noCookies, raw: raw !== undefined ? raw : JSON.stringify(message), headers: [MCP_ACCEPT, ...headers], asserts, pre, extraTests,
+});
+const BMC_LIST = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+// BMC_PING probes whether the Bifrost MCP serves: until it has loaded every method is a 503, and a ping's answer is
+// small, where a tools/list answer runs to megabytes.
+const BMC_PING = { jsonrpc: "2.0", id: 1, method: "ping" };
+// bmcReady is the first request of every folder that needs the Bifrost MCP loaded.
+const bmcReady = (id) => bmc(id, "setup: wait until the Bifrost MCP has loaded its spec", BMC_PING, [BMC_WAITED, A.status(200), rpcResult()], { pre: BMC_WAIT });
+// BY_NAME indexes a tools/list answer by tool name, as byName (ES5).
+const BY_NAME = "var byName = {}; ((pm.response.json().result || {}).tools || []).forEach(function (t) { byName[t.name] = t; });";
+const listHas = (names) => A.custom(`tools/list serves ${names.join(", ")}`, [BY_NAME, ...names.map((n) => `pm.expect(byName, ${lit(n)}).to.have.property(${lit(n)});`)]);
+const listLacks = (names, why) => A.custom(`tools/list does not serve ${names.join(", ")}${why ? ` (${why})` : ""}`, [BY_NAME, ...names.map((n) => `pm.expect(byName, ${lit(n)}).to.not.have.property(${lit(n)});`)]);
+// hint asserts one annotation of one tool.
+const hint = (tool, name, v) => A.custom(`${tool} ${name} is ${v}`, [BY_NAME, `pm.expect(byName[${lit(tool)}] && byName[${lit(tool)}].annotations[${lit(name)}], ${lit(tool)}).to.equal(${v});`]);
+// RESULT_TEXT reads a tools/call result's first text block as text, and parses it as json when it is JSON.
+const RESULT_TEXT = "var r = pm.response.json().result || {}; var text = (r.content && r.content[0] && r.content[0].text) || ''; var json = null; try { json = JSON.parse(text); } catch (e) { json = null; }";
+const callOK = (desc, lines = []) => A.custom(`the call succeeded${desc ? ": " + desc : ""}`, [RESULT_TEXT, "pm.expect(r.isError, 'body: ' + pm.response.text()).to.not.equal(true);", ...lines]);
+const callFailed = (desc, lines = []) => A.custom(`the call failed${desc ? ": " + desc : ""}`, [RESULT_TEXT, "pm.expect(r.isError, 'body: ' + pm.response.text()).to.equal(true);", ...lines]);
+// restoreBifrostMCP restores the config a test read. bifrost_mcp_allow_writes and bifrost_mcp_spec_url are copied only
+// when sent, so a snapshot without them sends null, which puts back the default rather than keeping the test's value.
+const restoreBifrostMCP = (id) => putConfig(id, "teardown: restore the original config", [
+  "if (cc.bifrost_mcp_allow_writes === undefined) { cc.bifrost_mcp_allow_writes = null; }",
+  "if (cc.bifrost_mcp_spec_url === undefined) { cc.bifrost_mcp_spec_url = null; }",
+], [A.status(200)]);
+const bmcWait = (id, title = "setup: wait until the rebuilt Bifrost MCP is serving") => bmc(id, title, BMC_PING, [BMC_WAITED, A.status(200)], { pre: ["pm.collectionVariables.set('bmc_ready', '0');", ...BMC_WAIT] });
+
+// modelRequests counts a scenario's logged model requests, exactly n or, with atLeast, n or more (Warp may take a
+// closing step after the scripted ones). Its message names only the count: the log carries every tool Warp declares
+// and runs to megabytes, which a failure message must not repeat.
+const modelRequests = (n, { atLeast = false } = {}) => A.custom(`${atLeast ? "at least " : ""}${n} model request${n === 1 ? "" : "s"} logged`, [REQS,
+  `pm.expect(reqs.length, 'model requests logged')${atLeast ? `.to.be.at.least(${n})` : `.to.equal(${n})`};`]);
+const BMC01 = folder("BMC-01 Protocol", `Setup: ${BMC_TEXT}.`, [
+  bmcReady("BMC-01"),
+  bmc("BMC-01", "initialize answers with the tools capability, no list_changed, and the protocol version asked for", init("2025-06-18"), [A.status(200), A.custom("result names the server, advertises tools without listChanged, and agrees 2025-06-18", [
+    "var res = pm.response.json().result || {};",
+    "pm.expect(res.serverInfo && res.serverInfo.name, 'body: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+    "pm.expect(res.capabilities && res.capabilities.tools, 'body: ' + pm.response.text()).to.be.an('object');",
+    "pm.expect(res.capabilities.tools.listChanged, 'listChanged: tools/list is never pushed').to.not.equal(true);",
+    "pm.expect(res.protocolVersion, 'body: ' + pm.response.text()).to.equal('2025-06-18');",
+  ])]),
+  bmc("BMC-01", "ping answers an empty result", { jsonrpc: "2.0", id: 2, method: "ping" }, [A.status(200), rpcResultEquals({})]),
+  bmc("BMC-01", "a notification is accepted with no body", { jsonrpc: "2.0", method: "notifications/initialized" }, [A.status(202), A.custom("no body", ["pm.expect(pm.response.text(), 'body').to.equal('');"])]),
+  bmc("BMC-01", "an unknown method is -32601", { jsonrpc: "2.0", id: 3, method: "resources/list_everything" }, [A.status(200), rpcError(-32601)]),
+  bmc("BMC-01", "a body that is not JSON is -32700", null, [A.status(200), rpcError(-32700)], { raw: "{" }),
+  request("BMC-01", "GET has no SSE stream: 405, Allow POST", "GET", V1MCP, { headers: [MCP_ACCEPT], asserts: [A.status(405), A.custom("Allow is POST", ["pm.expect(pm.response.headers.get('Allow'), 'Allow').to.equal('POST');"])] }),
+]);
+
+const BMC02 = folder("BMC-02 Who may call /v1/mcp", `Setup: ${BMC_TEXT}; dashboard auth on. /v1/mcp takes what /api takes, and a tool call carries the caller's headers but never a cookie.`, [
+  bmcReady("BMC-02"),
+  bmc("BMC-02", "no credential is a 401, like /api", BMC_PING, [A.status(401)], { noAuth: true, noCookies: true }),
+  bmc("BMC-02", "a virtual key alone is a 401 that says why", BMC_PING, [A.status(401), A.custom("the refusal names the virtual key", ["pm.expect(pm.response.text().toLowerCase()).to.include('virtual key');"])], { noAuth: true, noCookies: true, headers: [{ key: "Authorization", value: "Bearer sk-bf-bmc02-unknown-key" }] }),
+  bmc("BMC-02", "the admin credentials are accepted", BMC_PING, [A.status(200), rpcResult()]),
+  adminLogin("BMC-02"),
+  bmc("BMC-02", "a dashboard session cookie gets past /v1/mcp itself", BMC_PING, [A.status(200), rpcResult()], { noAuth: true, noCookies: true, headers: [{ key: "Cookie", value: "token={{admin_cookie}}" }] }),
+  bmc("BMC-02", "but its tool call reaches /api without the cookie, so a page cannot ride a browser session: 401", call("listProviders"), [A.status(200), callFailed("HTTP 401", ["pm.expect(text.split('\\n')[0], 'text: ' + text).to.equal('HTTP 401 Unauthorized');"])], { noAuth: true, noCookies: true, headers: [{ key: "Cookie", value: "token={{admin_cookie}}" }] }),
+  adminLogout("BMC-02"),
+]);
+
+const DENIED = ["login", "logout", "handleOAuthCallback", "websocketConnect", "connectRealtime"];
+const BMC03 = folder("BMC-03 What is served", `Setup: ${BMC_TEXT}. Every operation in the spec is a tool named after its operationId, except denied routes (credentials, browser steps, streams, the other MCP server, binary downloads), deprecated operations, and enterprise-only operations an OSS gateway does not route.`, [
+  bmcReady("BMC-03"),
+  bmc("BMC-03", "tools/list", BMC_LIST, [
+    A.status(200),
+    listHas(["listProviders", "getVersion", "getConfig", "listTeams", "createVirtualKey", "deleteVirtualKey", "getLogs"]),
+    A.custom("inference and SDK routes are tools too", [BY_NAME, "['createChatCompletion', 'listModels'].forEach(function (n) { pm.expect(byName, n).to.have.property(n); });"]),
+    listLacks(DENIED, "denied routes"),
+    listLacks(["listVirtualKeyUsersLegacy", "listTeamCustomersLegacy", "addUserAccessProfileVirtualKey"], "deprecated"),
+    listLacks(["listUsers"], "enterprise-only, not routed on OSS"),
+    A.custom("every tool has a description and an object input schema", [BY_NAME, "Object.keys(byName).forEach(function (n) { var t = byName[n]; pm.expect(t.description, n + ' description').to.be.a('string').that.is.not.empty; var s = t.inputSchema || {}; pm.expect(s.type, n + ' inputSchema.type').to.equal('object'); });"]),
+  ]),
+]);
+
+const BMC04 = folder("BMC-04 Annotations", `Setup: ${BMC_TEXT}. GETs are read-only; every DELETE, and a POST or PUT the spec marks x-bifrost-destructive (rotateVirtualKey, recalculateLogCosts, reregisterMCPClient), is destructive; /api tools act on this gateway only (closed-world), the inference routes reach providers (open-world).`, [
+  bmcReady("BMC-04"),
+  bmc("BMC-04", "tools/list", BMC_LIST, [
+    A.status(200),
+    hint("listProviders", "readOnlyHint", true), hint("listProviders", "openWorldHint", false),
+    hint("createVirtualKey", "readOnlyHint", false), hint("createVirtualKey", "destructiveHint", false),
+    hint("updateVirtualKey", "destructiveHint", false),
+    hint("deleteVirtualKey", "destructiveHint", true),
+    hint("rotateVirtualKey", "destructiveHint", true),
+    hint("recalculateLogCosts", "destructiveHint", true),
+    hint("reregisterMCPClient", "destructiveHint", true),
+    hint("createChatCompletion", "readOnlyHint", false), hint("createChatCompletion", "openWorldHint", true),
+    hint("listModels", "openWorldHint", true),
+  ]),
+]);
+
+const BMC05 = folder("BMC-05 Tool calls", `Setup: ${BMC_TEXT}; ${LLM_TEXT}.`, [
+  bmcReady("BMC-05"),
+  bmc("BMC-05", "a read runs through /api and returns its body", call("listProviders"), [A.status(200), callOK("the /api/providers body", ["pm.expect(json && json.providers, 'text: ' + text).to.be.an('array');", "var names = json.providers.map(function (p) { return p.name; });", "pm.expect(names, 'text: ' + text).to.include.members(['openai', 'anthropic', 'gemini']);"])]),
+  bmc("BMC-05", "createVirtualKey creates a key, its body flattened into the arguments", call("createVirtualKey", { name: "bmc05-key" }), [A.status(200), callOK("the created key comes back", ["pm.expect(json && json.virtual_key && json.virtual_key.name, 'text: ' + text).to.equal('bmc05-key');"])], {
+    extraTests: [RESULT_TEXT, "if (json && json.virtual_key) { pm.collectionVariables.set('bmc05_vk_id', json.virtual_key.id); }"],
+  }),
+  request("BMC-05", "the key is there through /api", "GET", "/api/governance/virtual-keys/{{bmc05_vk_id}}", { asserts: [A.status(200)] }),
+  bmc("BMC-05", "getVirtualKey reads it back, its path parameter an argument", null, [A.status(200), callOK("the key named bmc05-key", ["pm.expect(json && json.virtual_key && json.virtual_key.name, 'text: ' + text).to.equal('bmc05-key');"])], {
+    raw: JSON.stringify(call("getVirtualKey", { vk_id: "{{bmc05_vk_id}}" })),
+  }),
+  bmc("BMC-05", "deleteVirtualKey removes it", null, [A.status(200), callOK()], { raw: JSON.stringify(call("deleteVirtualKey", { vk_id: "{{bmc05_vk_id}}" })) }),
+  request("BMC-05", "the key is gone through /api", "GET", "/api/governance/virtual-keys/{{bmc05_vk_id}}", { asserts: [A.status(404)] }),
+  bmc("BMC-05", "an /api error comes back as isError with its status: 404", call("getVirtualKey", { vk_id: "bmc05-no-such-key" }), [A.status(200), callFailed("HTTP 404", ["pm.expect(text.split('\\n')[0], 'text: ' + text).to.equal('HTTP 404 Not Found');"])]),
+  bmc("BMC-05", "a missing required argument is refused before /api is called", call("getVirtualKey", {}), [A.status(200), A.custom("an error naming vk_id", [
+    "var b = pm.response.json(); var msg = b.error ? b.error.message : (((b.result || {}).content || [])[0] || {}).text;",
+    "pm.expect(b.error || (b.result && b.result.isError), 'body: ' + pm.response.text()).to.be.ok;",
+    "pm.expect(msg, 'body: ' + pm.response.text()).to.include('vk_id');",
+  ])]),
+  bmc("BMC-05", "an unknown tool is an error", call("bmc05NoSuchTool"), [A.status(200), A.custom("a JSON-RPC error or an isError result", [
+    "var b = pm.response.json();",
+    "pm.expect(b.error || (b.result && b.result.isError), 'body: ' + pm.response.text()).to.be.ok;",
+  ])]),
+  llmScript("BMC-05", "bmc05", TEXT_OK),
+  bmc("BMC-05", "an inference tool runs a completion on the mock model", call("createChatCompletion", { model: MODEL, messages: [userMsg("bmc05")] }), [A.status(200), callOK("the scripted reply", ["pm.expect(json && json.choices && json.choices[0].message.content, 'text: ' + text).to.equal('ok');"])]),
+  llmCaptured("BMC-05", "the completion reached the model once", "bmc05", [modelRequests(1)]),
+  bmc("BMC-05", "tools/list", BMC_LIST, [A.status(200), A.custom("getLogs takes metadata as an object of key to value, not a metadata_<key> argument", [BY_NAME,
+    "var props = (byName.getLogs.inputSchema || {}).properties || {};",
+    "pm.expect(props, 'getLogs properties').to.have.property('metadata');",
+    "pm.expect(props.metadata.type, 'metadata.type').to.equal('object');",
+    "Object.keys(props).forEach(function (p) { pm.expect(p.indexOf('metadata_'), p).to.not.equal(0); });",
+  ])]),
+  bmc("BMC-05", "getLogs with a metadata filter runs", call("getLogs", { metadata: { bmc05: "x" }, limit: 1 }), [A.status(200), callOK("a logs page", ["pm.expect(json, 'text: ' + text).to.be.an('object');"])]),
+]);
+
+const BMC06 = folder("BMC-06 What a tool call carries", `Setup: ${BMC_TEXT}; ${ALLOWLIST_TEXT}; a fleet server bmc06 as an OAuth protected resource. A tool call forwards the caller's headers, takes its host from public_base_url whatever Host the caller sent, and never carries a cookie.`, [
+  bmcReady("BMC-06"),
+  bmc("BMC-06", "a virtual key sent with the admin credentials reaches the inference route: an unknown one is refused there", call("listModels"), [A.status(200), callFailed("the route refused the key, so it was forwarded", [
+    "pm.expect(text.split('\\n')[0], 'text: ' + text).to.equal('HTTP 401 Unauthorized');",
+    "pm.expect(text, 'text: ' + text).to.include('access_not_found');",
+  ])], { headers: [{ key: "x-bf-vk", value: "sk-bf-bmc06-unknown-key" }] }),
+  bmc("BMC-06", "x-bf-api-key-id reaches the inference route: an unknown key id pins the request, so it does not run", call("createChatCompletion", { model: MODEL, messages: [userMsg("bmc06", "never sent")] }), [A.status(200), callFailed("the route pinned the key id", [
+    "pm.expect(text, 'text: ' + text).to.include('no_key_supports_model');",
+    "pm.expect(text, 'text: ' + text).to.include('bmc06-missing-key-id');",
+  ])], { headers: [{ key: "x-bf-api-key-id", value: "bmc06-missing-key-id" }] }),
+  ...allowlistOn("BMC-06"),
+  ...asServer("BMC-06", "bmc06"),
+  bmc("BMC-06", "an OAuth client created with a spoofed Host gets a redirect_uri on public_base_url's host", call("addMCPClient", { body: oauthBody("bmc06-c", "bmc06", "bmc06") }), [A.status(200), callOK("redirect_uri is http://127.0.0.1:<port>/api/oauth/callback", [
+    QS_FN,
+    "pm.expect(json && json.authorize_url, 'text: ' + text).to.be.a('string');",
+    "var redirect = qs(json.authorize_url).redirect_uri || '';",
+    "pm.expect(redirect, 'redirect_uri').to.not.include('evil.example');",
+    "pm.expect(redirect, 'redirect_uri').to.match(/^http:\\/\\/127\\.0\\.0\\.1:\\d+\\/api\\/oauth\\/callback$/);",
+  ])], { headers: [{ key: "Host", value: "evil.example" }] }),
+  // The client stays pending_oauth, so there is no client to delete; its flow expires.
+  restoreConfig("BMC-06"),
+]);
+
+const BMC07 = folder("BMC-07 Settings", `Setup: ${BMC_TEXT}. A config save that changes bifrost_mcp_allow_writes or bifrost_mcp_spec_url rebuilds the Bifrost MCP; a rebuild that fails keeps the server it had; invalid values are refused.`, [
+  bmcReady("BMC-07"),
+  readConfig("BMC-07"),
+  putConfig("BMC-07", "a public_base_url that is not an absolute URL is refused", ["cc.public_base_url = 'gateway.example.com';"], [A.status(400), A.msgContains("public_base_url")]),
+  putConfig("BMC-07", "a public_base_url with a query is refused", ["cc.public_base_url = 'http://127.0.0.1:1/?token=x';"], [A.status(400), A.msgContains("public_base_url")]),
+  putConfig("BMC-07", "a bifrost_mcp_spec_url outside the app directory is refused", ["cc.bifrost_mcp_spec_url = '/etc/bifrost/openapi.json';"], [A.status(400), A.msgContains("bifrost_mcp_spec_url")]),
+  putConfig("BMC-07", "setup: turn /api writes off", ["cc.bifrost_mcp_allow_writes = false;"], [A.status(200)]),
+  bmcWait("BMC-07"),
+  bmc("BMC-07", "writes off: /api writes are not served, reads and inference are", BMC_LIST, [A.status(200), listLacks(["createVirtualKey", "deleteVirtualKey", "updateVirtualKey"]), listHas(["listProviders", "createChatCompletion"])]),
+  bmc("BMC-07", "writes off: calling createVirtualKey anyway is an error and writes nothing", call("createVirtualKey", { name: "bmc07-key" }), [A.status(200), A.custom("a JSON-RPC error or an isError result", ["var b = pm.response.json();", "pm.expect(b.error || (b.result && b.result.isError), 'body: ' + pm.response.text()).to.be.ok;"])]),
+  request("BMC-07", "no key named bmc07-key exists", "GET", "/api/governance/virtual-keys?search=bmc07-key&limit=100", { asserts: [A.status(200), A.custom("none named bmc07-key", ["pm.expect((pm.response.json().virtual_keys || []).filter(function (k) { return k.name === 'bmc07-key'; }).length, 'body: ' + pm.response.text()).to.equal(0);"])] }),
+  putConfig("BMC-07", "setup: point bifrost_mcp_spec_url at a file the app directory does not have", ["cc.bifrost_mcp_allow_writes = false;", "cc.bifrost_mcp_spec_url = 'bmc07-missing.json';"], [A.status(200)]),
+  bmc("BMC-07", "the failed rebuild kept the server it had", BMC_LIST, [A.status(200), listHas(["listProviders"]), listLacks(["createVirtualKey"])]),
+  restoreBifrostMCP("BMC-07"),
+  bmcWait("BMC-07"),
+  bmc("BMC-07", "restored: /api writes are served again", BMC_LIST, [A.status(200), listHas(["createVirtualKey", "listProviders"])]),
+]);
+
+const BMC08 = folder("BMC-08 public_base_url is required", `Setup: ${BMC_TEXT}. Tool calls take their host from public_base_url and never from the caller's Host, so there is no fallback: with it cleared the Bifrost MCP does not serve, and /v1/mcp says which setting to set.`, [
+  bmcReady("BMC-08"),
+  readConfig("BMC-08"),
+  putConfig("BMC-08", "setup: clear public_base_url", ["cc.public_base_url = null;"], [A.status(200)]),
+  bmc("BMC-08", "cleared: /v1/mcp is a 503 naming public_base_url", BMC_PING, [A.status(503), A.custom("the message names public_base_url", ["pm.expect(pm.response.text(), 'body').to.include('public_base_url');"])]),
+  restoreConfig("BMC-08"),
+  bmcWait("BMC-08", "restored: wait until the Bifrost MCP is serving again"),
+  bmc("BMC-08", "restored: tools/list answers", BMC_LIST, [A.status(200), listHas(["listProviders"])]),
+]);
+
+// ================================================================ WMG: Warp on the Bifrost MCP
+
+// Warp reaches the Bifrost MCP in process as the dashboard user who asked, and offers its model the /api reads except
+// the log reads (its own tools answer those) and the reads that return virtual key values, plus the creates, which run
+// only after the person presses Confirm on a card. The model is the mock: each test scripts which tool it calls and
+// reads back what Warp sent it.
+const WARP_TEXT = `Warp on (feature flag on by default), configured on openai/mock-model; ${LLM_TEXT}`;
+// Enabled Warp needs an embedding model, which in turn needs the vector store the runner boots (chromem, in memory).
+const WARP_CONFIG_BODY = [
+  "pm.variables.set('warp_config_body', JSON.stringify({ enabled: true, provider: 'openai', model: 'mock-model', api_key_id: '', embedding_provider: 'openai', embedding_model: 'text-embedding-3-small', embedding_dimension: 1536 }));",
+];
+// Saving the Warp config needs the local admin, which the auth middleware marks for a dashboard session but not for
+// Basic credentials, so it is saved with the admin's session cookie.
+const ADMIN_SESSION = { noAuth: true, noCookies: true, headers: [{ key: "Cookie", value: "token={{admin_cookie}}" }] };
+const warpOn = (id) => [
+  adminLogin(id),
+  request(id, "setup: the warp feature flag is on", "GET", "/api/feature-flags", { asserts: [A.status(200), A.custom("warp is enabled", ["var f = (pm.response.json().flags || []).filter(function (x) { return x.id === 'warp'; })[0];", "pm.expect(f && f.enabled, 'body: ' + pm.response.text()).to.equal(true);"])] }),
+  request(id, "setup: read the Warp config", "GET", "/api/warp/config", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('warp_config_was', pm.response.text());"] }),
+  request(id, "setup: configure Warp on openai/mock-model", "PUT", "/api/warp/config", { ...ADMIN_SESSION, raw: "{{warp_config_body}}", pre: WARP_CONFIG_BODY, asserts: [A.status(200)] }),
+];
+const warpRestore = (id) => request(id, "teardown: restore the Warp config", "PUT", "/api/warp/config", { ...ADMIN_SESSION, raw: "{{warp_config_was}}", asserts: [A.status(200)] });
+// warpAsk starts a Warp thread with one question carrying the scenario marker. The thread id goes in <key>_conv, the
+// question in <key>_q, what Warp answered (a card's question, else the answer) in <key>_a, and a confirmation card's
+// Confirm hint in <key>_token.
+const warpAsk = (id, title, key, text, asserts) => request(id, title, "POST", "/api/warp/chat", {
+  body: { messages: [{ role: "user", content: `${marker(key)} ${text}` }], stream: false }, asserts: [A.status(200), ...asserts],
+  extraTests: [
+    "var b = pm.response.json();",
+    `pm.collectionVariables.set(${lit(key + "_q")}, ${lit(`${marker(key)} ${text}`)});`,
+    `pm.collectionVariables.set(${lit(key + "_a")}, (b.question && b.question.question) || b.answer || '');`,
+    `if (b.conversation_id) { pm.collectionVariables.set(${lit(key + "_conv")}, b.conversation_id); }`,
+    `var o = ((b.question || {}).options || [])[0]; if (o && o.hint) { pm.collectionVariables.set(${lit(key + "_token")}, o.hint); }`,
+  ],
+});
+// warpReply sends content on the thread warpAsk started for key, with the thread so far, as the dashboard does: Warp
+// builds a turn's history from the messages the client sends, and the card's option sends its hint as the last one.
+// newThread sends content alone on a new thread instead.
+const warpReply = (id, title, key, content, asserts, { newThread = false } = {}) => request(id, title, "POST", "/api/warp/chat", {
+  raw: "{{warp_reply_body}}", asserts: [A.status(200), ...asserts],
+  pre: newThread
+    ? [`pm.variables.set('warp_reply_body', JSON.stringify({ messages: [{ role: 'user', content: pm.variables.replaceIn(${lit(content)}) }], stream: false }));`]
+    : [`pm.variables.set('warp_reply_body', JSON.stringify({ conversation_id: pm.collectionVariables.get(${lit(key + "_conv")}) || '', messages: [{ role: 'user', content: pm.collectionVariables.get(${lit(key + "_q")}) }, { role: 'assistant', content: pm.collectionVariables.get(${lit(key + "_a")}) || '' }, { role: 'user', content: pm.variables.replaceIn(${lit(content)}) }], stream: false }));`],
+});
+const turnOK = () => A.custom("the turn succeeded", ["var b = pm.response.json();", "pm.expect(b.error, 'body: ' + pm.response.text()).to.equal(undefined);"]);
+const confirmCard = (tool, mentions) => A.custom(`the turn ends with a confirmation card for ${tool}`, [
+  "var b = pm.response.json(); var q = b.question || {}; var o = q.options || [];",
+  "pm.expect(b.finish_reason, 'body: ' + pm.response.text()).to.equal('question');",
+  "pm.expect(q.kind, 'body: ' + pm.response.text()).to.equal('confirm');",
+  `pm.expect(q.question, 'body: ' + pm.response.text()).to.include(${lit(tool)}).and.to.include(${lit(mentions)});`,
+  "pm.expect(o.length, 'options').to.equal(2);",
+  "pm.expect(o[0].hint, 'Confirm').to.match(/^confirm:[0-9a-f]{32}$/);",
+  "pm.expect(o[1].hint, 'Cancel').to.equal('cancel');",
+]);
+// keysNamed counts the virtual keys named name, read straight from /api, and keeps the first one's id in <v>_id.
+const keysNamed = (id, title, name, n, v) => request(id, title, "GET", `/api/governance/virtual-keys?search=${name}&limit=100`, {
+  asserts: [A.status(200), A.custom(`${n} key${n === 1 ? "" : "s"} named ${name}`, [`pm.expect((pm.response.json().virtual_keys || []).filter(function (k) { return k.name === ${lit(name)}; }).length, 'body: ' + pm.response.text()).to.equal(${n});`])],
+  extraTests: v ? [`var k = (pm.response.json().virtual_keys || []).filter(function (k) { return k.name === ${lit(name)}; })[0]; if (k) { pm.collectionVariables.set(${lit(v + "_id")}, k.id); }`] : [],
+});
+// foldersNamed counts the prompt-repo folders named name and keeps the first one's id in <v>_id. Folder names may
+// repeat, so a create that ran twice shows as two, where a second virtual key of one name is refused.
+const foldersNamed = (id, title, name, n, v) => request(id, title, "GET", "/api/prompt-repo/folders", {
+  asserts: [A.status(200), A.custom(`${n} folder${n === 1 ? "" : "s"} named ${name}`, [`pm.expect((pm.response.json().folders || []).filter(function (f) { return f.name === ${lit(name)}; }).length, 'body: ' + pm.response.text()).to.equal(${n});`])],
+  extraTests: v ? [`var f = (pm.response.json().folders || []).filter(function (f) { return f.name === ${lit(name)}; })[0]; if (f) { pm.collectionVariables.set(${lit(v + "_id")}, f.id); }`] : [],
+});
+const SENT = (i) => `var sent = JSON.stringify((reqs[${i}] || {}).json || {});`;
+const declares = (i, names) => A.custom(`request ${i + 1} declares ${names.join(", ")}`, [REQS, `var tools = (reqs[${i}] && reqs[${i}].tools) || [];`, ...names.map((n) => `pm.expect(tools, ${lit(n)}).to.include(${lit(n)});`)]);
+const declaresNone = (i, names, why) => A.custom(`request ${i + 1} declares none of ${names.join(", ")}${why ? ` (${why})` : ""}`, [REQS, `var tools = (reqs[${i}] && reqs[${i}].tools) || [];`, ...names.map((n) => `pm.expect(tools, ${lit(n)}).to.not.include(${lit(n)});`)]);
+const sentIncludes = (i, s, desc) => A.custom(`request ${i + 1} carries ${desc || lit(s)}`, [REQS, SENT(i), `pm.expect(sent, 'request ' + ${i + 1}).to.include(${lit(s)});`]);
+const modelCall = (callId, name, args = {}) => ({ id: callId, name, arguments: args });
+const WMG_READS = ["listProviders", "getConfig", "listTeams", "listCustomers"];
+const WMG_SECRET_READS = ["listVirtualKeys", "getVirtualKey", "listUserVirtualKeys", "getUserVirtualKeysByEmail"];
+const WMG_NEVER = ["updateVirtualKey", "deleteVirtualKey", "rotateVirtualKey", "flushVaultCache", "createChatCompletion", "listModels", "getLogs", "getMCPLogs"];
+
+const WMG01 = folder("WMG-01 A management read answers a configuration question", `Setup: ${BMC_TEXT}; ${WARP_TEXT}. The model calls listProviders.`, [
+  bmcReady("WMG-01"),
+  ...warpOn("WMG-01"),
+  llmScript("WMG-01", "wmg01", { turns: [{ tool_calls: [modelCall("w1", "listProviders")] }, { text: "done" }], then: { text: "ok" } }),
+  warpAsk("WMG-01", "ask which providers are configured", "wmg01", "Which providers are configured?", [turnOK(), A.custom("listProviders ran and did not fail", [
+    "var calls = (pm.response.json().tool_calls || []).filter(function (c) { return c.name === 'listProviders'; });",
+    "pm.expect(calls.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(calls[0].failed, 'body: ' + pm.response.text()).to.not.equal(true);",
+  ])]),
+  llmCaptured("WMG-01", "the providers listProviders read reached the model", "wmg01", [modelRequests(2, { atLeast: true }), sentIncludes(1, "anthropic"), sentIncludes(1, "gemini")]),
+  warpRestore("WMG-01"),
+]);
+
+const WMG02 = folder("WMG-02 Which management tools the model is offered", `Setup: ${BMC_TEXT}; ${WARP_TEXT}. Warp offers the /api reads except the log reads and the reads that return virtual key values, and the creates; never an update, a delete, a destructive POST or a route outside /api. The model then calls listVirtualKeys anyway.`, [
+  bmcReady("WMG-02"),
+  ...warpOn("WMG-02"),
+  llmScript("WMG-02", "wmg02", { turns: [{ tool_calls: [modelCall("w1", "listVirtualKeys")] }, { text: "done" }], then: { text: "ok" } }),
+  warpAsk("WMG-02", "ask for the virtual keys", "wmg02", "List the virtual keys.", [turnOK(), A.custom("the listVirtualKeys call failed", [
+    "var calls = (pm.response.json().tool_calls || []).filter(function (c) { return c.name === 'listVirtualKeys'; });",
+    "pm.expect(calls.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(calls[0].failed, 'body: ' + pm.response.text()).to.equal(true);",
+  ])]),
+  llmCaptured("WMG-02", "the declarations and the refusal the model saw", "wmg02", [
+    modelRequests(2, { atLeast: true }),
+    declares(0, [...WMG_READS, "createVirtualKey"]),
+    declaresNone(0, WMG_SECRET_READS, "they return virtual key values"),
+    declaresNone(0, WMG_NEVER, "updates, deletes, destructive POSTs, routes outside /api and the log reads"),
+    sentIncludes(1, "no tool named", "the refusal of listVirtualKeys"),
+  ]),
+  warpRestore("WMG-02"),
+]);
+
+const WMG03 = folder("WMG-03 No offered read hands the model a virtual key's value", `Setup: ${BMC_TEXT}; ${WARP_TEXT}; a team wmg03-team and a customer wmg03-customer, each holding a virtual key. The model reads the teams and the customers.`, [
+  bmcReady("WMG-03"),
+  ...warpOn("WMG-03"),
+  request("WMG-03", "setup: create team wmg03-team", "POST", "/api/governance/teams", { body: { name: "wmg03-team" }, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('wmg03_team_id', pm.response.json().team.id);"] }),
+  request("WMG-03", "setup: create customer wmg03-customer", "POST", "/api/governance/customers", { body: { name: "wmg03-customer" }, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('wmg03_customer_id', pm.response.json().customer.id);"] }),
+  request("WMG-03", "setup: a virtual key on the team", "POST", "/api/governance/virtual-keys", { raw: JSON.stringify({ name: "wmg03-team-key", team_id: "{{wmg03_team_id}}" }), asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('wmg03_tk_id', pm.response.json().virtual_key.id);", "pm.collectionVariables.set('wmg03_tk', pm.response.json().virtual_key.value);"] }),
+  request("WMG-03", "setup: a virtual key on the customer", "POST", "/api/governance/virtual-keys", { raw: JSON.stringify({ name: "wmg03-customer-key", customer_id: "{{wmg03_customer_id}}" }), asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('wmg03_ck_id', pm.response.json().virtual_key.id);", "pm.collectionVariables.set('wmg03_ck', pm.response.json().virtual_key.value);"] }),
+  llmScript("WMG-03", "wmg03", { turns: [{ tool_calls: [modelCall("w1", "listTeams"), modelCall("w2", "listCustomers")] }, { text: "done" }], then: { text: "ok" } }),
+  warpAsk("WMG-03", "ask about the teams and customers", "wmg03", "What teams and customers are there?", [turnOK()]),
+  llmCaptured("WMG-03", "the reads reached the model without either key's value", "wmg03", [
+    modelRequests(2, { atLeast: true }),
+    sentIncludes(1, "wmg03-team"), sentIncludes(1, "wmg03-customer"),
+    A.custom("neither virtual key value is in what the model was sent", [REQS, SENT(1),
+      "['wmg03_tk', 'wmg03_ck'].forEach(function (v) { var value = pm.collectionVariables.get(v); pm.expect(value, v).to.be.a('string').that.is.not.empty; pm.expect(sent.indexOf(value), v + ' value sent to the model').to.equal(-1); });"]),
+  ]),
+  request("WMG-03", "teardown: delete the team's key", "DELETE", "/api/governance/virtual-keys/{{wmg03_tk_id}}", { asserts: [A.status(200)] }),
+  request("WMG-03", "teardown: delete the customer's key", "DELETE", "/api/governance/virtual-keys/{{wmg03_ck_id}}", { asserts: [A.status(200)] }),
+  request("WMG-03", "teardown: delete the team", "DELETE", "/api/governance/teams/{{wmg03_team_id}}", { asserts: [A.status(200)] }),
+  request("WMG-03", "teardown: delete the customer", "DELETE", "/api/governance/customers/{{wmg03_customer_id}}", { asserts: [A.status(200)] }),
+  warpRestore("WMG-03"),
+]);
+
+const WMG04 = folder("WMG-04 A create runs only on Confirm, once, as the caller", `Setup: ${BMC_TEXT}; ${WARP_TEXT}. The model asks for createVirtualKey named wmg04-key, then, on a second thread, createFolder named wmg04-folder: folder names may repeat, so a replayed Confirm that ran the write again would leave a second folder.`, [
+  bmcReady("WMG-04"),
+  ...warpOn("WMG-04"),
+  llmScript("WMG-04", "wmg04", { turns: [{ tool_calls: [modelCall("w1", "createVirtualKey", { name: "wmg04-key" })] }, { text: "Created." }], then: { text: "ok" } }),
+  warpAsk("WMG-04", "asking for the write ends the turn with a card", "wmg04", "Create a virtual key named wmg04-key.", [turnOK(), confirmCard("createVirtualKey", "wmg04-key"), A.custom("the thread id comes back", ["pm.expect(pm.response.json().conversation_id, 'body').to.be.a('string').that.is.not.empty;"])]),
+  keysNamed("WMG-04", "the card alone writes nothing", "wmg04-key", 0),
+  warpReply("WMG-04", "Confirm runs the write", "wmg04", "{{wmg04_token}}", [turnOK(), A.custom("on the same thread", ["pm.expect(pm.response.json().conversation_id, 'body').to.equal(pm.collectionVariables.get('wmg04_conv'));"])]),
+  keysNamed("WMG-04", "Confirm created exactly one key", "wmg04-key", 1, "wmg04_vk"),
+  llmCaptured("WMG-04", "the model read the write's result as a tool result, and never saw the token", "wmg04", [modelRequests(2, { atLeast: true }), sentIncludes(1, "wmg04-key"),
+    A.custom("the Confirm token is not in what the model was sent", [REQS, SENT(1), "var tok = (pm.collectionVariables.get('wmg04_token') || '').replace(/^confirm:/, ''); pm.expect(tok, 'token').to.not.equal(''); pm.expect(sent.indexOf(tok), 'token sent to the model').to.equal(-1);"])]),
+  warpReply("WMG-04", "Confirm again is answered, not failed", "wmg04", "{{wmg04_token}}", [turnOK()]),
+  keysNamed("WMG-04", "still exactly one key", "wmg04-key", 1),
+  llmScript("WMG-04", "wmg04f", { turns: [{ tool_calls: [modelCall("w1", "createFolder", { name: "wmg04-folder" })] }, { text: "Created." }], then: { text: "ok" } }),
+  warpAsk("WMG-04", "a folder create ends the turn with a card", "wmg04f", "Create a prompt folder named wmg04-folder.", [turnOK(), confirmCard("createFolder", "wmg04-folder")]),
+  warpReply("WMG-04", "Confirm runs the folder create", "wmg04f", "{{wmg04f_token}}", [turnOK()]),
+  foldersNamed("WMG-04", "Confirm created exactly one folder", "wmg04-folder", 1, "wmg04_folder"),
+  warpReply("WMG-04", "Confirm again on the folder card is answered", "wmg04f", "{{wmg04f_token}}", [turnOK()]),
+  foldersNamed("WMG-04", "the replayed Confirm ran nothing: still exactly one folder", "wmg04-folder", 1),
+  request("WMG-04", "teardown: delete the folder", "DELETE", "/api/prompt-repo/folders/{{wmg04_folder_id}}", { asserts: [A.status(200)] }),
+  request("WMG-04", "teardown: delete the key", "DELETE", "/api/governance/virtual-keys/{{wmg04_vk_id}}", { asserts: [A.status(200)] }),
+  warpRestore("WMG-04"),
+]);
+
+const WMG05 = folder("WMG-05 Cancel writes nothing, and the card cannot be confirmed afterwards", `Setup: ${BMC_TEXT}; ${WARP_TEXT}. The model asks for createVirtualKey named wmg05-key.`, [
+  bmcReady("WMG-05"),
+  ...warpOn("WMG-05"),
+  llmScript("WMG-05", "wmg05", { turns: [{ tool_calls: [modelCall("w1", "createVirtualKey", { name: "wmg05-key" })] }], then: { text: "ok" } }),
+  warpAsk("WMG-05", "asking for the write ends the turn with a card", "wmg05", "Create a virtual key named wmg05-key.", [turnOK(), confirmCard("createVirtualKey", "wmg05-key")]),
+  warpReply("WMG-05", "Cancel", "wmg05", "cancel", [turnOK()]),
+  keysNamed("WMG-05", "Cancel wrote nothing", "wmg05-key", 0),
+  warpReply("WMG-05", "the card's Confirm after Cancel", "wmg05", "{{wmg05_token}}", [turnOK()]),
+  keysNamed("WMG-05", "Confirm after Cancel wrote nothing", "wmg05-key", 0),
+  warpRestore("WMG-05"),
+]);
+
+const WMG06 = folder("WMG-06 A Confirm token works only on its own thread", `Setup: ${BMC_TEXT}; ${WARP_TEXT}. The model asks for createVirtualKey named wmg06-key; the card's token is then sent on a new thread.`, [
+  bmcReady("WMG-06"),
+  ...warpOn("WMG-06"),
+  llmScript("WMG-06", "wmg06", { turns: [{ tool_calls: [modelCall("w1", "createVirtualKey", { name: "wmg06-key" })] }], then: { text: "ok" } }),
+  warpAsk("WMG-06", "asking for the write ends the turn with a card", "wmg06", "Create a virtual key named wmg06-key.", [turnOK(), confirmCard("createVirtualKey", "wmg06-key")]),
+  // Exactly what the card's Confirm sends, but on a new thread. The turn that follows reaches the model without a
+  // scenario marker, so only the status is asserted: what matters is that nothing was written.
+  warpReply("WMG-06", "the token on a new thread", "wmg06", "{{wmg06_token}}", [], { newThread: true }),
+  keysNamed("WMG-06", "nothing was written", "wmg06-key", 0),
+  warpRestore("WMG-06"),
+]);
+
+const WMG07 = folder("WMG-07 A tool Warp does not offer is not run, even when the model names it", `Setup: ${BMC_TEXT}; ${WARP_TEXT}; a virtual key wmg07-key. The model calls deleteVirtualKey and updateVirtualKey on it.`, [
+  bmcReady("WMG-07"),
+  ...warpOn("WMG-07"),
+  vkCreate("WMG-07", "setup: create virtual key wmg07-key", { name: "wmg07-key" }, "wmg07_vk"),
+  llmScript("WMG-07", "wmg07", { turns: [{ tool_calls: [modelCall("w1", "deleteVirtualKey", { vk_id: "{{wmg07_vk_id}}" }), modelCall("w2", "updateVirtualKey", { vk_id: "{{wmg07_vk_id}}", name: "wmg07-renamed" })] }, { text: "done" }], then: { text: "ok" } }),
+  warpAsk("WMG-07", "ask to delete and rename the key", "wmg07", "Delete virtual key wmg07-key, or rename it.", [turnOK(), A.custom("both calls failed", [
+    "var calls = pm.response.json().tool_calls || [];",
+    "['deleteVirtualKey', 'updateVirtualKey'].forEach(function (n) { var c = calls.filter(function (x) { return x.name === n; })[0]; pm.expect(c, n + ': ' + pm.response.text()).to.be.an('object'); pm.expect(c.failed, n).to.equal(true); });",
+  ])]),
+  keysNamed("WMG-07", "the key is still there, under its name", "wmg07-key", 1),
+  keysNamed("WMG-07", "and was not renamed", "wmg07-renamed", 0),
+  vkDelete("WMG-07", "teardown: delete the key", "wmg07_vk"),
+  warpRestore("WMG-07"),
+]);
+
+const WMG08 = folder("WMG-08 With /api writes off Warp offers no create", `Setup: ${BMC_TEXT}; ${WARP_TEXT}; bifrost_mcp_allow_writes false, restored at the end.`, [
+  bmcReady("WMG-08"),
+  ...warpOn("WMG-08"),
+  readConfig("WMG-08"),
+  putConfig("WMG-08", "setup: turn /api writes off", ["cc.bifrost_mcp_allow_writes = false;"], [A.status(200)]),
+  bmcWait("WMG-08"),
+  llmScript("WMG-08", "wmg08", { turns: [{ tool_calls: [modelCall("w1", "createVirtualKey", { name: "wmg08-key" })] }], then: { text: "ok" } }),
+  warpAsk("WMG-08", "asking for a write", "wmg08", "Create a virtual key named wmg08-key.", [turnOK(), A.custom("no confirmation card", ["pm.expect(pm.response.json().question, 'body: ' + pm.response.text()).to.not.be.ok;"])]),
+  llmCaptured("WMG-08", "reads are offered, the create is not", "wmg08", [declares(0, ["listProviders"]), declaresNone(0, ["createVirtualKey"])]),
+  keysNamed("WMG-08", "nothing was written", "wmg08-key", 0),
+  restoreBifrostMCP("WMG-08"),
+  bmcWait("WMG-08"),
+  warpRestore("WMG-08"),
+]);
+
+const WMG09 = folder("WMG-09 Without public_base_url Warp has no management tools", `Setup: ${BMC_TEXT}; ${WARP_TEXT}; public_base_url cleared, restored at the end.`, [
+  bmcReady("WMG-09"),
+  ...warpOn("WMG-09"),
+  readConfig("WMG-09"),
+  putConfig("WMG-09", "setup: clear public_base_url", ["cc.public_base_url = null;"], [A.status(200)]),
+  llmScript("WMG-09", "wmg09", TEXT_OK),
+  warpAsk("WMG-09", "ask a configuration question", "wmg09", "Which providers are configured?", [turnOK()]),
+  llmCaptured("WMG-09", "no management tool was offered", "wmg09", [modelRequests(1, { atLeast: true }), declaresNone(0, ["listProviders", "getConfig", "createVirtualKey"])]),
+  restoreConfig("WMG-09"),
+  bmcWait("WMG-09"),
+  warpRestore("WMG-09"),
+]);
+
+const WMG10 = folder("WMG-10 A confirmed write that /api refuses is reported", `Setup: ${BMC_TEXT}; ${WARP_TEXT}; a virtual key wmg10-key already exists. The model asks for another key with the same name.`, [
+  bmcReady("WMG-10"),
+  ...warpOn("WMG-10"),
+  vkCreate("WMG-10", "setup: create virtual key wmg10-key", { name: "wmg10-key" }, "wmg10_vk"),
+  llmScript("WMG-10", "wmg10", { turns: [{ tool_calls: [modelCall("w1", "createVirtualKey", { name: "wmg10-key" })] }, { text: "That failed." }], then: { text: "ok" } }),
+  warpAsk("WMG-10", "asking for the duplicate ends the turn with a card", "wmg10", "Create a virtual key named wmg10-key.", [turnOK(), confirmCard("createVirtualKey", "wmg10-key")]),
+  warpReply("WMG-10", "Confirm: the write is refused, and the turn still answers", "wmg10", "{{wmg10_token}}", [turnOK(), A.custom("an answer", ["pm.expect(pm.response.json().answer, 'body: ' + pm.response.text()).to.be.a('string').that.is.not.empty;"])]),
+  llmCaptured("WMG-10", "the model read the refusal as the tool result", "wmg10", [modelRequests(2, { atLeast: true }), sentIncludes(1, "HTTP 4", "the /api error status")]),
+  keysNamed("WMG-10", "still exactly one key named wmg10-key", "wmg10-key", 1),
+  vkDelete("WMG-10", "teardown: delete the key", "wmg10_vk"),
+  warpRestore("WMG-10"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -12512,6 +12946,8 @@ const collection = {
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
     section("PUD Per-user discovery", "Per-user discovery tests.", [PUD01, PUD02, PUD03, PUD04, PUD05, PUD06, PUD07, PUD08, PUD09, PUD10, PUD11, PUD12, PUD13, PUD14, PUD15, PUD16, PUD17, PUD18, PUD19, PUD20, PUD21, PUD22, PUD23, PUD24, PUD25, PUD26, PUD27, PUD28, PUD29, PUD30, PUD31, PUD32, PUD33, PUD34, PUD35, PUD36, PUD37, PUD38, PUD39, PUD40, PUD41, PUD42, PUD43, PUD44, PUD45, PUD46, PUD47, PUD48, PUD49, PUD50, PUD51, PUD52, PUD53, PUD54, PUD55, PUD56, PUD57, PUD58, PUD59, PUD60, PUD61, PUD62, PUD63, PUD64, PUD65, PUD66, PUD67, PUD68, PUD69, PUD70, PUD71, PUD72, PUD73, PUD74, PUD75, PUD76, PUD77, PUD78, PUD79, PUD80, PUD81, PUD82, PUD83, PUD84, PUD85, PUD86, PUD87, PUD88, PUD89, PUD90, GO37]),
     section("SYNC Tool sync", "Upstream tool changes reaching every client type: the sync interval, a tools/list_changed push and refresh-tools.", SYNC),
+    section("BMC Bifrost MCP on /v1/mcp", "Bifrost's own HTTP API as MCP tools on /v1/mcp: protocol, who may call it, what is served and how it is annotated, tool calls, what a call carries, settings, and the required public_base_url.", [BMC01, BMC02, BMC03, BMC04, BMC05, BMC06, BMC07, BMC08]),
+    section("WMG Warp on the Bifrost MCP", "Warp's management tools, reached in process through the Bifrost MCP: what the model is offered, that no offered read hands it a virtual key's value, and creates that run only on Confirm.", [WMG01, WMG02, WMG03, WMG04, WMG05, WMG06, WMG07, WMG08, WMG09, WMG10]),
   ],
 };
 
