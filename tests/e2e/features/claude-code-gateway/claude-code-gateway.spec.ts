@@ -177,4 +177,10 @@ test.describe('Claude Code device sign-in page', () => {
     await claudeCodeGatewayPage.gotoDevicePage('?approved=1')
     await expect(claudeCodeGatewayPage.deviceApproved).toContainText("You're signed in")
   })
+
+  test('confirms a denied sign-in', async ({ claudeCodeGatewayPage }) => {
+    await claudeCodeGatewayPage.gotoDevicePage('?denied=1')
+    await expect(claudeCodeGatewayPage.deviceDenied).toContainText('Sign-in denied')
+    await expect(claudeCodeGatewayPage.deviceApproved).toHaveCount(0)
+  })
 })
