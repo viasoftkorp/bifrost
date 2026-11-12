@@ -984,6 +984,7 @@ export interface CoreConfig {
 		access_token_ttl?: number;
 		allowed_redirect_uris?: string[];
 		disable_vk_identity?: boolean;
+		disable_client_metadata_documents?: boolean;
 	};
 }
 

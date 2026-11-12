@@ -11,6 +11,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 ### 2.1.49
 
 - Added `bifrost.client.mcpClientMetadataUrl` (`client.mcp_client_metadata_url`): where you host Bifrost's Client ID Metadata Document, for MCP servers that cannot reach Bifrost. Unset, the document is served under `mcpExternalClientUrl`.
+- Added `bifrost.client.oauth2ServerConfig.disableClientMetadataDocuments` (`client.oauth2_server_config.disable_client_metadata_documents`): stop advertising client metadata documents, so MCP clients register through Dynamic Client Registration. For deployments where Bifrost cannot reach the clients' document hosts.
 
 ### 2.1.48
 
