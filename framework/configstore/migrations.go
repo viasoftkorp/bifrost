@@ -591,6 +591,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_cache_creation_above_12hr_pricing_columns"}, run: migrationAddCacheCreationAbove12hrPricingColumns},
 	{IDs: []string{"add_datasheet_overrides_table"}, run: migrationAddDatasheetOverridesTable},
 	{IDs: []string{"add_usage_estimation_tokenizers_json_column"}, run: migrationAddUsageEstimationTokenizersJSONColumn},
+	{IDs: []string{"add_mcp_client_metadata_url_columns"}, run: migrationAddMCPClientMetadataURLColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17153,6 +17154,44 @@ func migrationAddUsageEstimationTokenizersJSONColumn(ctx context.Context, db *go
 				return fmt.Errorf("failed to drop usage_estimation_tokenizers_json column: %w", err)
 			}
 			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPClientMetadataURLColumns adds the hosted Client ID Metadata Document URL setting and
+// the marker for oauth configs whose client_id is Bifrost's own document. Existing configs stay unmarked
+// and are recognised by the document's path under their callback base.
+func migrationAddMCPClientMetadataURLColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_metadata_url_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []struct {
+		model  any
+		column string
+	}{
+		{&tables.TableClientConfig{}, "mcp_client_metadata_url"},
+		{&tables.TableOauthConfig{}, "client_metadata_document"},
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, c := range columns {
+				if err := addColumnIfNotExists(tx, logger, c.model, c.column); err != nil {
+					return fmt.Errorf("failed to add %s column: %w", c.column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping it would discard the hosted document URL and which configs use Bifrost's document", migrationName)
 		},
 	}})
 	if err := m.Migrate(); err != nil {
