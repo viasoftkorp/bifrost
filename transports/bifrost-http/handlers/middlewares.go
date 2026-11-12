@@ -1409,6 +1409,9 @@ func buildRealtimeTransportPathSet() map[string]struct{} {
 	for _, path := range integrations.GenAIRealtimePaths("/genai") {
 		paths[path] = struct{}{}
 	}
+	for _, path := range integrations.GenAIVertexRealtimePaths("/genai") {
+		paths[path] = struct{}{}
+	}
 	return paths
 }
 
