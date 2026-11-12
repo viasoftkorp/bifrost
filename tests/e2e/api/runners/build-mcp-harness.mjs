@@ -5273,10 +5273,15 @@ const LIB34 = folder("LIB-34 Loopback URL over the API", "Setup: PUT /api/config
   mockGet("LIB-34", "library", "control: the PUT never reached the catalog", [A.custom("library's request log is empty", ["pm.expect(((pm.response.json().rest || {}).calls || []), 'body: ' + pm.response.text()).to.eql([]);"])]),
 ]);
 
-const LIB36 = folder("LIB-36 Interval validation over the API", "Setup: PUT /api/config with framework_config.mcp_library_sync_interval 0, then -1.", [
+const LIB36_REFUSED = "MCP library sync interval must be 0 (disabled) or at least 3600 seconds";
+const LIB36 = folder("LIB-36 Interval validation over the API", "Setup: PUT /api/config with framework_config.mcp_library_sync_interval -1, 60, then 0, restoring the stored interval at the end. 0 turns the sync off; anything else must be at least 3600 seconds.", [
   readConfig("LIB-36"),
-  frameworkPut("LIB-36", "PUT mcp_library_sync_interval 0", "mcp_library_sync_interval", "0", [A.status(400), A.msgEquals("MCP library sync interval must be greater than 0")]),
-  frameworkPut("LIB-36", "PUT mcp_library_sync_interval -1", "mcp_library_sync_interval", "-1", [A.status(400), A.msgEquals("MCP library sync interval must be greater than 0")]),
+  request("LIB-36", "setup: read the stored mcp_library_sync_interval", "GET", "/api/config?from_db=true", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('lib36_interval', String(pm.response.json().framework_config.mcp_library_sync_interval || 0));"] }),
+  frameworkPut("LIB-36", "PUT mcp_library_sync_interval -1", "mcp_library_sync_interval", "-1", [A.status(400), A.msgEquals(LIB36_REFUSED)]),
+  frameworkPut("LIB-36", "PUT mcp_library_sync_interval 60, below the minimum", "mcp_library_sync_interval", "60", [A.status(400), A.msgEquals(LIB36_REFUSED)]),
+  frameworkPut("LIB-36", "PUT mcp_library_sync_interval 0 turns the sync off", "mcp_library_sync_interval", "0", [A.status(200)]),
+  request("LIB-36", "0 is stored", "GET", "/api/config?from_db=true", { asserts: [A.status(200), A.custom("mcp_library_sync_interval is 0", ["pm.expect(pm.response.json().framework_config.mcp_library_sync_interval, 'body: ' + pm.response.text()).to.equal(0);"])] }),
+  frameworkPut("LIB-36", "teardown: restore the stored mcp_library_sync_interval", "mcp_library_sync_interval", "Number(pm.collectionVariables.get('lib36_interval'))", [A.status(200)]),
 ]);
 
 // ================================================================ MCP tools inside model requests, on the mock LLM
@@ -12630,7 +12635,17 @@ const BMC05 = folder("BMC-05 Tool calls", `Setup: ${BMC_TEXT}; ${LLM_TEXT}.`, [
   llmScript("BMC-05", "bmc05", TEXT_OK),
   bmc("BMC-05", "an inference tool runs a completion on the mock model", call("createChatCompletion", { model: MODEL, messages: [userMsg("bmc05")] }), [A.status(200), callOK("the scripted reply", ["pm.expect(json && json.choices && json.choices[0].message.content, 'text: ' + text).to.equal('ok');"])]),
   llmCaptured("BMC-05", "the completion reached the model once", "bmc05", [modelRequests(1)]),
-  bmc("BMC-05", "tools/list", BMC_LIST, [A.status(200), A.custom("getLogs takes metadata as an object of key to value, not a metadata_<key> argument", [BY_NAME,
+  // A tool result is one message, so no tool streams: stream and stream_options are not arguments, and a call that
+  // passes stream anyway gets the completion, not its raw event stream.
+  llmScript("BMC-05", "bmc05s", { turns: [{ text: "not streamed" }], then: { text: "ok" } }),
+  bmc("BMC-05", "createChatCompletion with stream true answers with the completion, not an event stream", call("createChatCompletion", { model: MODEL, stream: true, stream_options: { include_usage: true }, messages: [userMsg("bmc05s")] }), [A.status(200), callOK("one completion body", [
+    "pm.expect(text.indexOf('data:'), 'text: ' + text).to.equal(-1);",
+    "pm.expect(json && json.choices && json.choices[0].message.content, 'text: ' + text).to.equal('not streamed');",
+  ])]),
+  llmCaptured("BMC-05", "the model was asked without streaming", "bmc05s", [modelRequests(1), A.custom("request 1 is not a stream", [REQS, "pm.expect(reqs[0].stream, 'stream').to.equal(false);"])]),
+  bmc("BMC-05", "tools/list", BMC_LIST, [A.status(200), A.custom("no inference tool takes stream or stream_options", [BY_NAME,
+    "['createChatCompletion', 'createResponse', 'createTextCompletion', 'openaiCreateChatCompletion', 'anthropicCreateMessage'].forEach(function (n) { var props = ((byName[n] || {}).inputSchema || {}).properties || {}; pm.expect(props, n).to.not.have.property('stream'); pm.expect(props, n).to.not.have.property('stream_options'); });",
+  ]), A.custom("getLogs takes metadata as an object of key to value, not a metadata_<key> argument", [BY_NAME,
     "var props = (byName.getLogs.inputSchema || {}).properties || {};",
     "pm.expect(props, 'getLogs properties').to.have.property('metadata');",
     "pm.expect(props.metadata.type, 'metadata.type').to.equal('object');",
@@ -12701,16 +12716,13 @@ const WARP_TEXT = `Warp on (feature flag on by default), configured on openai/mo
 const WARP_CONFIG_BODY = [
   "pm.variables.set('warp_config_body', JSON.stringify({ enabled: true, provider: 'openai', model: 'mock-model', api_key_id: '', embedding_provider: 'openai', embedding_model: 'text-embedding-3-small', embedding_dimension: 1536 }));",
 ];
-// Saving the Warp config needs the local admin, which the auth middleware marks for a dashboard session but not for
-// Basic credentials, so it is saved with the admin's session cookie.
-const ADMIN_SESSION = { noAuth: true, noCookies: true, headers: [{ key: "Cookie", value: "token={{admin_cookie}}" }] };
+// Saving the Warp config is admin-only; the admin's Basic credentials, which every request carries, are the local admin.
 const warpOn = (id) => [
-  adminLogin(id),
   request(id, "setup: the warp feature flag is on", "GET", "/api/feature-flags", { asserts: [A.status(200), A.custom("warp is enabled", ["var f = (pm.response.json().flags || []).filter(function (x) { return x.id === 'warp'; })[0];", "pm.expect(f && f.enabled, 'body: ' + pm.response.text()).to.equal(true);"])] }),
   request(id, "setup: read the Warp config", "GET", "/api/warp/config", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('warp_config_was', pm.response.text());"] }),
-  request(id, "setup: configure Warp on openai/mock-model", "PUT", "/api/warp/config", { ...ADMIN_SESSION, raw: "{{warp_config_body}}", pre: WARP_CONFIG_BODY, asserts: [A.status(200)] }),
+  request(id, "setup: configure Warp on openai/mock-model", "PUT", "/api/warp/config", { raw: "{{warp_config_body}}", pre: WARP_CONFIG_BODY, asserts: [A.status(200)] }),
 ];
-const warpRestore = (id) => request(id, "teardown: restore the Warp config", "PUT", "/api/warp/config", { ...ADMIN_SESSION, raw: "{{warp_config_was}}", asserts: [A.status(200)] });
+const warpRestore = (id) => request(id, "teardown: restore the Warp config", "PUT", "/api/warp/config", { raw: "{{warp_config_was}}", asserts: [A.status(200)] });
 // warpAsk starts a Warp thread with one question carrying the scenario marker. The thread id goes in <key>_conv, the
 // question in <key>_q, what Warp answered (a card's question, else the answer) in <key>_a, and a confirmation card's
 // Confirm hint in <key>_token.
