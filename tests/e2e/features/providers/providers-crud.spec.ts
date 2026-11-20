@@ -576,6 +576,74 @@ test.describe("Providers", () => {
       expect(key.aliases["speech-tts"].use_speech_endpoints).toBeUndefined();
     });
 
+    test("should save a key service tier, its deployment override, and clear both", async ({ providersPage, page }) => {
+      if (!(await providersPage.providerExists("openai"))) {
+        await providersPage.addKnownProviderFromDropdown("openai");
+        createdProviders.push("openai");
+      }
+      const keyName = `OpenAI-Tier-${Date.now()}`;
+      createdKeys.push({ provider: "openai", keyName });
+      const created = await page.request.post("/api/providers/openai/keys", {
+        data: {
+          name: keyName,
+          value: "sk-e2e-service-tier",
+          models: ["*"],
+          weight: 0,
+          aliases: { "tier-model": { model_id: "gpt-4o-mini", description: "service tier e2e" } },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      await page.reload();
+      await providersPage.selectProvider("openai");
+      const keyTier = page.getByTestId("apikey-service-tier-select");
+      const override = page.getByTestId("deployment-service-tier-select");
+      const edit = async () => {
+        await providersPage.dismissToasts();
+        await providersPage.getKeyRow(keyName).getByTestId("key-actions-trigger").click();
+        await page.getByRole("menuitem", { name: /Edit/i }).click();
+        await expect(providersPage.keyForm).toBeVisible();
+        await page.getByTestId("deployment-expand-tier-model").click();
+      };
+      const choose = async (select: typeof keyTier, label: string) => {
+        await select.click();
+        await page.getByRole("option", { name: label, exact: true }).click();
+      };
+      const save = async () => {
+        await providersPage.keySaveBtn.click();
+        await providersPage.waitForSuccessToast();
+        await expect(providersPage.keyForm).not.toBeVisible();
+      };
+      const savedKey = async () => {
+        const response = await page.request.get("/api/providers/openai/keys");
+        expect(response.ok()).toBe(true);
+        const body = await response.json();
+        const key = body.keys.find((entry: { name: string }) => entry.name === keyName);
+        expect(key).toBeTruthy();
+        return key;
+      };
+
+      await edit();
+      await expect(keyTier).toContainText("Not set");
+      await expect(override).toContainText("Use key setting");
+      await choose(keyTier, "priority");
+      await choose(override, "flex");
+      await save();
+      let key = await savedKey();
+      expect(key.service_tier).toBe("priority");
+      expect(key.weight).toBe(0);
+      expect(key.aliases["tier-model"].service_tier).toBe("flex");
+
+      await edit();
+      await expect(keyTier).toContainText("priority");
+      await expect(override).toContainText("flex");
+      await choose(keyTier, "Not set");
+      await choose(override, "Use key setting");
+      await save();
+      key = await savedKey();
+      expect(key.service_tier).toBeUndefined();
+      expect(key.aliases["tier-model"].service_tier).toBeUndefined();
+    });
+
     test("should save a Cloudflare key with its account ID", async ({
       providersPage,
       page,

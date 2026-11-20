@@ -1008,6 +1008,30 @@ Availability varies by region. Check [GCP documentation](https://cloud.google.co
 
 Some models (e.g. Claude Opus 4.7/4.8) are published only on Google's multi-region pool endpoints. When such a model is requested with a single US or Europe region, Bifrost automatically promotes the call to the matching pool endpoint (`aiplatform.us.rep.googleapis.com` / `aiplatform.eu.rep.googleapis.com`) and rewrites the `locations/` path segment to `us` / `eu`. Set `force_single_region: true` on the Vertex key (or per-deployment) to disable this and keep the exact region you configured — for example when you serve these models from a single region via provisioned throughput. Endpoint rewrites are emitted at `debug` log level.
 
+## Service Tiers
+
+Gemini requests with `service_tier: "priority"` or `"flex"` are sent with the `X-Vertex-AI-LLM-Shared-Request-Type` header ([Priority PayGo](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/priority-paygo), [Flex PayGo](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/flex-paygo)). The header is sent only when both hold:
+
+| Tier | Regions | Models |
+| ---- | ------- | ------ |
+| `priority` | `global`, `us`, `eu` | Google's Priority PayGo list, or the datasheet's `service_tiers` for the model |
+| `flex` | `global` | Google's Flex PayGo list, or the datasheet's `service_tiers` for the model |
+
+Otherwise the request runs on Standard PayGo. The tier that served the request is returned as `service_tier`.
+
+The tier comes from the request, or from the key's or alias's `service_tier` when the request sets none. A weight-0 key is chosen only after the other keys are rate limited, so a spare key with `service_tier: "priority"` sends Priority PayGo only on the retry after a Standard 429. This needs `max_retries` of at least 1:
+
+```json
+{
+  "vertex": {
+    "keys": [
+      { "name": "vertex-standard", "weight": 1, "models": ["*"], "vertex_key_config": { "project_id": "my-project", "region": "us", "auth_credentials": "env.VERTEX_CREDENTIALS" } },
+      { "name": "vertex-priority", "weight": 0, "models": ["*"], "service_tier": "priority", "vertex_key_config": { "project_id": "my-project", "region": "us", "auth_credentials": "env.VERTEX_CREDENTIALS" } }
+    ]
+  }
+}
+```
+
 ## Streaming
 
 Streaming format depends on model type:

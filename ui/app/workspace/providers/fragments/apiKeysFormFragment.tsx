@@ -1,7 +1,13 @@
 import { ModelAccessSelector } from "@/components/modelAccess";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { DefaultAnthropicWorkloadIdentityConfig, DefaultVertexAWSWorkloadIdentityConfig, OAuthSigningAlgorithms } from "@/lib/types/config";
+import {
+	DefaultAnthropicWorkloadIdentityConfig,
+	DefaultVertexAWSWorkloadIdentityConfig,
+	OAuthSigningAlgorithms,
+	ServiceTier,
+	ServiceTierValues,
+} from "@/lib/types/config";
 import { identitySourceType } from "@/lib/types/schemas";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,6 +30,9 @@ import { GithubCopilotSignIn } from "./githubCopilotSignIn";
 // Vertex authentication methods offered by the key form. The backend picks the mode from which
 // fields are set; this discriminator only drives the tabs and validation.
 type VertexAuthType = "service_account" | "service_account_json" | "api_key" | "aws_workload_identity";
+
+// Select value for "no key-level service tier"; Radix Select reserves the empty string.
+const NO_SERVICE_TIER = "__none__";
 
 const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure", "vertex", "wafer"];
 
@@ -525,6 +534,36 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 									}
 								/>
 							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+				<FormField
+					control={control}
+					name={`key.service_tier`}
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>{t("providers.keys.serviceTier")}</FormLabel>
+							<FormDescription>{t("providers.keys.serviceTierHelp")}</FormDescription>
+							<Select
+								value={field.value ?? NO_SERVICE_TIER}
+								// null, not undefined: the key update API keeps a field the payload omits.
+								onValueChange={(v) => field.onChange(v === NO_SERVICE_TIER ? null : (v as ServiceTier))}
+							>
+								<FormControl>
+									<SelectTrigger className="w-[260px]" data-testid="apikey-service-tier-select">
+										<SelectValue />
+									</SelectTrigger>
+								</FormControl>
+								<SelectContent>
+									<SelectItem value={NO_SERVICE_TIER}>{t("providers.keys.serviceTierNotSet")}</SelectItem>
+									{ServiceTierValues.map((tier) => (
+										<SelectItem key={tier} value={tier} data-testid={`apikey-service-tier-option-${tier}`}>
+											{tier}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
 							<FormMessage />
 						</FormItem>
 					)}

@@ -161,6 +161,7 @@ type Key struct {
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
 	UseOpenAIEndpoints     *bool                   `json:"use_openai_endpoints,omitempty"`      // Whether to use OpenAI-compatible endpoints for this key
+	ServiceTier            *BifrostServiceTier     `json:"service_tier,omitempty"`              // Tier sent on chat and responses requests that set none; an alias's service_tier wins
 	ConfigHash             string                  `json:"config_hash,omitempty"`               // Hash of config.json version, used for change detection
 	Status                 KeyStatusType           `json:"status,omitempty"`                    // Status of key
 	Description            string                  `json:"description,omitempty"`               // Description of key
@@ -333,6 +334,8 @@ type AliasConfig struct {
 	UseAnthropicEndpoints *bool      `json:"use_anthropic_endpoints,omitempty"` // Whether to use anthropic endpoints for this alias
 	UseOpenAIEndpoints    *bool      `json:"use_openai_endpoints,omitempty"`    // Whether to use OpenAI-compatible endpoints for this alias
 
+	ServiceTier *BifrostServiceTier `json:"service_tier,omitempty"` // Overrides the key's service_tier for this alias
+
 	*AzureAliasCfg
 	*VertexAliasCfg
 	*BedrockAliasCfg
@@ -386,6 +389,7 @@ func (ac AliasConfig) isLegacyShape() bool {
 		ac.ProjectID == nil &&
 		ac.UseAnthropicEndpoints == nil &&
 		ac.UseOpenAIEndpoints == nil &&
+		ac.ServiceTier == nil &&
 		ac.AzureAliasCfg == nil &&
 		ac.VertexAliasCfg == nil &&
 		ac.BedrockAliasCfg == nil &&

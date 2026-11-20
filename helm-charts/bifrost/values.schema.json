@@ -8768,6 +8768,11 @@
         "use_for_batch_api": {
           "type": "boolean"
         },
+        "service_tier": {
+          "type": "string",
+          "enum": ["auto", "default", "flex", "priority", "fast", "ultrafast"],
+          "description": "Service tier sent on chat completions and responses requests served by this key when the request sets none. An alias's service_tier overrides it. Each provider forwards only the tiers its model accepts."
+        },
         "use_anthropic_endpoints": {
           "type": "boolean",
           "description": "For deepseek, fireworks, vllm, and sgl keys: route chat completions and responses requests through Anthropic-compatible endpoints.",
@@ -9432,6 +9437,11 @@
                   "use_openai_endpoints": {
                     "type": "boolean",
                     "description": "Per-alias override of use_openai_endpoints."
+                  },
+                  "service_tier": {
+                    "type": "string",
+                    "enum": ["auto", "default", "flex", "priority", "fast", "ultrafast"],
+                    "description": "Per-alias override of the key's service_tier."
                   }
                 },
                 "required": ["model_id"],

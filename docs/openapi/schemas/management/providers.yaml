@@ -551,6 +551,10 @@ Key:
     use_openai_endpoints:
       type: boolean
       description: Whether to use OpenAI-compatible endpoints for this key
+    service_tier:
+      type: string
+      enum: [auto, default, flex, priority, fast, ultrafast]
+      description: Service tier sent on chat completions and responses requests served by this key when the request sets none. An alias's service_tier overrides it.
     config_hash:
       type: string
       description: Hash of config.json version, used for change detection

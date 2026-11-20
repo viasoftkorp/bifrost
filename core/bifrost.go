@@ -9186,6 +9186,58 @@ func toolSchemaPolicy(caps schemas.ModelCaps) providerUtils.ToolSchemaPolicy {
 	}
 }
 
+// keyServiceTier returns the service tier the attempt's resolved alias sets, else the key's, or
+// nil. A key with neither a tier nor aliases returns before the context lookup.
+func keyServiceTier(ctx *schemas.BifrostContext, key *schemas.Key) *schemas.BifrostServiceTier {
+	if len(key.Aliases) > 0 {
+		if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.ServiceTier != nil {
+			return ra.Config.ServiceTier
+		}
+	}
+	return key.ServiceTier
+}
+
+// applyKeyServiceTierChat fills service_tier from the attempt's alias or key when the caller set
+// none, so a spare key or alias can carry its own tier (e.g. a weight-0 key that sends priority
+// only once rotation reaches it). Copy-on-write: the caller's request is never mutated, and a
+// request with its own tier, or a key without one, is returned as-is with no allocation.
+func applyKeyServiceTierChat(ctx *schemas.BifrostContext, key *schemas.Key, r *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if r == nil || (r.Params != nil && r.Params.ServiceTier != nil) {
+		return r
+	}
+	tier := keyServiceTier(ctx, key)
+	if tier == nil {
+		return r
+	}
+	var params schemas.ChatParameters
+	if r.Params != nil {
+		params = *r.Params
+	}
+	params.ServiceTier = tier
+	cp := *r
+	cp.Params = &params
+	return &cp
+}
+
+// applyKeyServiceTierResponses is the Responses API parallel of applyKeyServiceTierChat.
+func applyKeyServiceTierResponses(ctx *schemas.BifrostContext, key *schemas.Key, r *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if r == nil || (r.Params != nil && r.Params.ServiceTier != nil) {
+		return r
+	}
+	tier := keyServiceTier(ctx, key)
+	if tier == nil {
+		return r
+	}
+	var params schemas.ResponsesParameters
+	if r.Params != nil {
+		params = *r.Params
+	}
+	params.ServiceTier = tier
+	cp := *r
+	cp.Params = &params
+	return &cp
+}
+
 // prepareChatRequest is the Chat Completions parallel of prepareResponsesRequest.
 func prepareChatRequest(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, provider schemas.ModelProvider, r *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
 	return normalizeChatToolSchemas(ctx, provider, promptCacheChatRequest(ctx, config, provider, providerUtils.RewriteChatCustomTools(ctx, provider, r)))
@@ -9276,6 +9328,7 @@ func injectedMCPInstructions(ctx *schemas.BifrostContext) *string {
 // turn Bifrost rewrote (injected tools, appended tool results) still echoes what the
 // caller sent.
 func (bifrost *Bifrost) dispatchChat(ctx *schemas.BifrostContext, provider schemas.Provider, config *schemas.ProviderConfig, key schemas.Key, chatRequest, original *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	chatRequest = applyKeyServiceTierChat(ctx, &key, chatRequest)
 	if bifrostError := routeChatReasoningMode(ctx, provider, chatRequest); bifrostError != nil {
 		return nil, bifrostError
 	}
@@ -9311,6 +9364,7 @@ func (bifrost *Bifrost) dispatchChat(ctx *schemas.BifrostContext, provider schem
 
 // dispatchResponses is the Responses API parallel of dispatchChat.
 func (bifrost *Bifrost) dispatchResponses(ctx *schemas.BifrostContext, provider schemas.Provider, config *schemas.ProviderConfig, key schemas.Key, responsesRequest, original *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	responsesRequest = applyKeyServiceTierResponses(ctx, &key, responsesRequest)
 	// Prepared BEFORE the chat-fallback branch: ToChatRequest keeps only function
 	// tools, so a namespace that reached it unflattened would be dropped silently.
 	preparedRequest, bifrostError := prepareResponsesRequest(ctx, config, provider, key, responsesRequest)
@@ -9344,6 +9398,7 @@ func (bifrost *Bifrost) dispatchResponses(ctx *schemas.BifrostContext, provider 
 // dispatchChatStream opens one chat completion stream, converting through the
 // Responses API when the request is marked for it.
 func (bifrost *Bifrost) dispatchChatStream(ctx *schemas.BifrostContext, provider schemas.Provider, config *schemas.ProviderConfig, key schemas.Key, chatRequest *schemas.BifrostChatRequest, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	chatRequest = applyKeyServiceTierChat(ctx, &key, chatRequest)
 	if bifrostError := routeChatReasoningMode(ctx, provider, chatRequest); bifrostError != nil {
 		return nil, bifrostError
 	}
@@ -9365,6 +9420,7 @@ func (bifrost *Bifrost) dispatchChatStream(ctx *schemas.BifrostContext, provider
 // dispatchResponsesStream opens one Responses API stream, converting through chat
 // completions when the request is marked for it.
 func (bifrost *Bifrost) dispatchResponsesStream(ctx *schemas.BifrostContext, provider schemas.Provider, config *schemas.ProviderConfig, key schemas.Key, responsesRequest *schemas.BifrostResponsesRequest, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	responsesRequest = applyKeyServiceTierResponses(ctx, &key, responsesRequest)
 	// Prepared BEFORE the chat-fallback branch: ToChatRequest keeps only function
 	// tools, so a namespace that reached it unflattened would be dropped silently.
 	preparedRequest, bifrostError := prepareResponsesRequest(ctx, config, provider, key, responsesRequest)

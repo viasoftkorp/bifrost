@@ -541,6 +541,7 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 		"use_for_batch_api":         func() { updateKey.UseForBatchAPI = oldRawKey.UseForBatchAPI },
 		"use_anthropic_endpoints":   func() { updateKey.UseAnthropicEndpoints = oldRawKey.UseAnthropicEndpoints },
 		"use_openai_endpoints":      func() { updateKey.UseOpenAIEndpoints = oldRawKey.UseOpenAIEndpoints },
+		"service_tier":              func() { updateKey.ServiceTier = oldRawKey.ServiceTier },
 		"description":               func() { updateKey.Description = oldRawKey.Description },
 	} {
 		if !gjson.GetBytes(body, field).Exists() {

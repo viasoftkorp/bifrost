@@ -7,7 +7,7 @@ import { ModelSelector } from "@/components/ui/modelSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { AliasConfig, ModelFamily, ModelFamilyValues } from "@/lib/types/config";
+import { AliasConfig, ModelFamily, ModelFamilyValues, ServiceTier, ServiceTierValues } from "@/lib/types/config";
 import { isLiteralHTTPSURL, SecretVar } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
 import { parseVertexEndpointURL } from "@/lib/vertexEndpoint";
@@ -575,6 +575,25 @@ function ExpandedConfigPanel({
 							{ModelFamilyValues.map((f) => (
 								<SelectItem key={f} value={f}>
 									{f}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+				</FieldRow>
+				<FieldRow label={t("providers.keys.serviceTier")} hint={t("providers.deployments.serviceTierHint")}>
+					<Select
+						value={config.service_tier ?? "__inherit__"}
+						onValueChange={(v) => onChange({ service_tier: v === "__inherit__" ? undefined : (v as ServiceTier) })}
+						disabled={disabled}
+					>
+						<SelectTrigger className="w-full" data-testid="deployment-service-tier-select">
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="__inherit__">{t("providers.deployments.useKeySetting")}</SelectItem>
+							{ServiceTierValues.map((tier) => (
+								<SelectItem key={tier} value={tier} data-testid={`deployment-service-tier-option-${tier}`}>
+									{tier}
 								</SelectItem>
 							))}
 						</SelectContent>

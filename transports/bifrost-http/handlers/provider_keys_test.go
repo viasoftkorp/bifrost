@@ -232,6 +232,7 @@ func TestDecodeKeyUpdate_PartialBody(t *testing.T) {
 			SGLKeyConfig:      &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar("http://old:30000")},
 			Enabled:           schemas.Ptr(false),
 			UseForBatchAPI:    schemas.Ptr(true),
+			ServiceTier:       schemas.Ptr(schemas.BifrostServiceTierPriority),
 			Description:       "primary",
 		}
 	}
@@ -270,6 +271,9 @@ func TestDecodeKeyUpdate_PartialBody(t *testing.T) {
 		if merged.Description != "primary" {
 			t.Fatalf("description: got %q, want primary", merged.Description)
 		}
+		if merged.ServiceTier == nil || *merged.ServiceTier != schemas.BifrostServiceTierPriority {
+			t.Fatalf("service_tier: got %v, want the stored priority", merged.ServiceTier)
+		}
 		// The fields that were sent still apply.
 		if len(merged.Models) != 2 || merged.Models[0] != "m1" {
 			t.Fatalf("models: got %v, want [m1 m2]", merged.Models)
@@ -290,7 +294,7 @@ func TestDecodeKeyUpdate_PartialBody(t *testing.T) {
 	})
 
 	t.Run("fields sent explicitly empty are cleared", func(t *testing.T) {
-		merged := update(t, `{"value":"","weight":0,"models":[],"description":"","sgl_key_config":null}`)
+		merged := update(t, `{"value":"","weight":0,"models":[],"description":"","sgl_key_config":null,"service_tier":null}`)
 		if merged.Value.GetValue() != "" {
 			t.Fatalf("value: got %q, want it cleared", merged.Value.GetValue())
 		}
@@ -305,6 +309,9 @@ func TestDecodeKeyUpdate_PartialBody(t *testing.T) {
 		}
 		if merged.SGLKeyConfig != nil {
 			t.Fatalf("sgl_key_config: got %+v, want nil", merged.SGLKeyConfig)
+		}
+		if merged.ServiceTier != nil {
+			t.Fatalf("service_tier: got %v, want it cleared", *merged.ServiceTier)
 		}
 	})
 }
